@@ -87,10 +87,11 @@ TEXT = {
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
         "history_for": "History for",
-        "edit_from_table": "Edit from table",
-        "pick_row_to_edit": "Select a row and click Save/Update below.",
         "edit_row_hint": "Tick the Edit checkbox for the reservation you want to modify.",
         "clear_selection": "Clear selection",
+        "edit_from_elroll": "Edit from El Roll",
+        "delete_from_elroll": "Delete from El Roll",
+        "confirm": "Confirm",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -158,10 +159,11 @@ TEXT = {
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
         "history_for": "Historial de",
-        "edit_from_table": "Editar desde la tabla",
-        "pick_row_to_edit": "Selecciona una fila y guarda/actualiza abajo.",
         "edit_row_hint": "Marca la casilla Editar para la reserva que deseas modificar.",
         "clear_selection": "Borrar selección",
+        "edit_from_elroll": "Editar desde El Roll",
+        "delete_from_elroll": "Borrar desde El Roll",
+        "confirm": "Confirmar",
     },
 }
 
@@ -169,6 +171,9 @@ TEXT = {
 def t(key: str) -> str:
     lang = st.session_state.get("lang", "en")
     return TEXT.get(lang, TEXT["en"]).get(key, key)
+
+
+STATUS_LABEL = {k: v for k, v in STATUSES}
 
 
 # ----------------- DB HELPERS -----------------
@@ -279,17 +284,6 @@ def init_db():
             """
         )
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS guests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guest_name TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         conn.commit()
 
@@ -308,12 +302,6 @@ def normalize_guest_name(name: str) -> str:
 def get_rooms():
     with db() as conn:
         return conn.execute("SELECT id, number FROM rooms ORDER BY number;").fetchall()
-
-
-def get_room_id_by_number(room_number: str) -> Optional[int]:
-    with db() as conn:
-        row = conn.execute("SELECT id FROM rooms WHERE number=?;", (room_number,)).fetchone()
-        return int(row[0]) if row else None
 
 
 def add_room(num: str):
@@ -353,9 +341,9 @@ def get_all_rooms_with_status(selected_date: date):
         reservation_map[room_number] = {
             "id": res[0],
             "guest_name": res[2],
-            "num_guests": res[3],
-            "tariff": res[4],
-            "notes": res[5],
+            "num_guests": int(res[3] or 0),
+            "tariff": float(res[4] or 0.0),
+            "notes": res[5] or "",
             "status": res[6],
             "check_in": parse_iso(res[7]),
             "check_out": parse_iso(res[8]),
@@ -383,7 +371,7 @@ def get_all_rooms_with_status(selected_date: date):
                     "room_number": room_number,
                     "guest_name": "",
                     "num_guests": 0,
-                    "tariff": 0,
+                    "tariff": 0.0,
                     "notes": "",
                     "status": "available",
                     "reservation_id": None,
@@ -417,7 +405,7 @@ def save_reservation(
     notes: str,
     status: str,
     reservation_id: Optional[int] = None,
-):
+) -> bool:
     guest_name = normalize_guest_name(guest_name)
 
     with db() as conn:
@@ -426,7 +414,6 @@ def save_reservation(
             return False
         room_id = int(room_row[0])
 
-        # Overlap check
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -462,7 +449,7 @@ def save_reservation(
                 SET guest_name=?, status=?, check_in=?, check_out=?, notes=?, num_guests=?, tariff=?, updated_at=?
                 WHERE id=?;
                 """,
-                (guest_name, status, iso(check_in), iso(check_out), notes, num_guests, tariff, tstamp, reservation_id),
+                (guest_name, status, iso(check_in), iso(check_out), notes, int(num_guests), float(tariff), tstamp, reservation_id),
             )
         else:
             conn.execute(
@@ -471,7 +458,7 @@ def save_reservation(
                                        notes, num_guests, tariff, created_at, updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?);
                 """,
-                (room_id, guest_name, status, iso(check_in), iso(check_out), notes, num_guests, tariff, tstamp, tstamp),
+                (room_id, guest_name, status, iso(check_in), iso(check_out), notes, int(num_guests), float(tariff), tstamp, tstamp),
             )
 
         conn.commit()
@@ -518,9 +505,10 @@ def get_guest_reservations(guest_name: str):
 
 
 def get_dashboard_stats(selected_date: date):
-    # Revenue removed (not shown in El Roll)
+    # Revenue removed from El Roll stats
     with db() as conn:
         total_rooms = conn.execute("SELECT COUNT(*) FROM rooms;").fetchone()[0]
+
         occupied_rooms = conn.execute(
             """
             SELECT COUNT(DISTINCT r.room_id)
@@ -530,6 +518,7 @@ def get_dashboard_stats(selected_date: date):
             """,
             (iso(selected_date), iso(selected_date)),
         ).fetchone()[0]
+
         total_guests = conn.execute(
             """
             SELECT COALESCE(SUM(r.num_guests), 0)
@@ -549,6 +538,20 @@ def get_dashboard_stats(selected_date: date):
     }
 
 
+def status_display(db_status: str) -> str:
+    if db_status == "available":
+        return t("available")
+    return STATUS_LABEL.get(db_status, db_status)
+
+
+def status_from_display(display: str) -> str:
+    if display == t("available"):
+        return "available"
+    # try exact match against localized labels (EN labels are stored in STATUS_LABEL)
+    inv = {v: k for k, v in STATUS_LABEL.items()}
+    return inv.get(display, display)
+
+
 # ----------------- APP START -----------------
 st.set_page_config("Isla Verde Hotel Manager", layout="wide")
 init_db()
@@ -562,7 +565,7 @@ st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("search_suggestions", [])
 st.session_state.setdefault("delete_candidate", None)
 
-# NEW: El Roll inline editor state
+# El Roll editor selection
 st.session_state.setdefault("elroll_edit_id", None)
 
 # load settings from DB
@@ -572,7 +575,7 @@ if "lang" not in st.session_state:
 # ✅ Simplified view is ALWAYS ON (main view). Switch removed.
 st.session_state.simplified_mode = True
 
-# login
+# ----------------- LOGIN -----------------
 if not st.session_state.authed:
     st.title(t("app_title"))
     st.caption(t("enter_password"))
@@ -585,7 +588,7 @@ if not st.session_state.authed:
             st.error(t("incorrect_password"))
     st.stop()
 
-# sidebar navigation
+# ----------------- SIDEBAR NAV -----------------
 st.sidebar.title(t("menu"))
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
@@ -598,7 +601,7 @@ VIEW_MAP = {
 }
 view_key = VIEW_MAP[view]
 
-# admin sidebar
+# ----------------- ADMIN SIDEBAR -----------------
 st.sidebar.divider()
 st.sidebar.subheader(t("admin_sensitive"))
 if st.session_state.admin:
@@ -628,32 +631,30 @@ if st.sidebar.button(t("logout")):
     st.session_state.admin = False
     st.rerun()
 
-# main header
+# ----------------- MAIN HEADER -----------------
 st.title(t("app_title"))
 
 # ----------------- VIEWS -----------------
 if view_key == "el_roll":
     # Date controls
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-
     with col1:
         if st.button(t("prev")):
             st.session_state.selected_date -= timedelta(days=1)
+            st.session_state.elroll_edit_id = None
             st.rerun()
-
     with col2:
         if st.button(t("today")):
             st.session_state.selected_date = date.today()
+            st.session_state.elroll_edit_id = None
             st.rerun()
-
     with col3:
         st.markdown(f"### {st.session_state.selected_date.strftime('%A, %B %d, %Y')}")
-
     with col4:
         if st.button(t("next")):
             st.session_state.selected_date += timedelta(days=1)
+            st.session_state.elroll_edit_id = None
             st.rerun()
-
     with col5:
         new_date = st.date_input(
             t("select_date"),
@@ -667,47 +668,42 @@ if view_key == "el_roll":
 
     # Dashboard stats (Revenue removed)
     stats = get_dashboard_stats(st.session_state.selected_date)
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    a, b, c = st.columns(3)
+    with a:
         st.metric(t("total_rooms"), stats["total_rooms"])
-    with c2:
+    with b:
         st.metric(t("total_guests"), stats["total_guests"])
-    with c3:
+    with c:
         st.metric(t("occupancy_rate"), f"{stats['occupancy_rate']:.1f}%")
 
     st.divider()
 
-    # Build El Roll table
     rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
 
+    # Build a table for display + choose row to edit
     rows = []
-    for room in rooms_status:
-        status_text = dict(STATUSES).get(room["status"], room["status"])
-        if room["status"] == "available":
-            status_text = t("available")
-
+    for r in rooms_status:
         rows.append(
             {
-                t("room"): room["room_number"],
-                t("guest_name"): room["guest_name"],
-                t("pax"): int(room["num_guests"]) if room["num_guests"] else "",
-                t("tariff"): float(room["tariff"]) if room["tariff"] else 0.0,
-                t("observations"): room["notes"],
-                t("status"): status_text,
-                "_reservation_id": room["reservation_id"],  # internal
-                t("edit"): False,  # checkbox column
+                t("room"): r["room_number"],
+                t("guest_name"): r["guest_name"],
+                t("pax"): r["num_guests"] if r["num_guests"] else "",
+                t("tariff"): r["tariff"] if r["tariff"] else 0.0,
+                t("observations"): r["notes"],
+                t("status"): status_display(r["status"]),
+                "_reservation_id": r["reservation_id"],
+                t("edit"): False,
             }
         )
 
-    if rows:
+    if not rows:
+        st.info(t("no_results"))
+    else:
         df = pd.DataFrame(rows)
 
-        # Style helper (works with dataframe view, not data_editor styling)
-        # We'll keep colors by using plain dataframe with status colors using Styler,
-        # but we also need editing selection -> use data_editor.
         st.caption(t("edit_row_hint"))
 
-        # Use data_editor so user can tick "Edit" checkbox for a row
+        # Only allow toggling the Edit checkbox
         edited_df = st.data_editor(
             df,
             use_container_width=True,
@@ -729,31 +725,28 @@ if view_key == "el_roll":
                 t("observations"): st.column_config.TextColumn(width="large"),
                 t("status"): st.column_config.TextColumn(width="medium"),
                 t("edit"): st.column_config.CheckboxColumn(width="small"),
-                "_reservation_id": st.column_config.TextColumn(width="small", disabled=True),
+                "_reservation_id": st.column_config.NumberColumn(width="small"),
             },
-            key="elroll_editor",
+            key="elroll_table_selector",
         )
 
-        # Determine selected reservation to edit (first row with Edit=True and has reservation_id)
+        # pick first checked row that has reservation id
         selected_ids = edited_df.loc[
             (edited_df[t("edit")] == True) & (edited_df["_reservation_id"].notna()),
             "_reservation_id",
         ].tolist()
-
         if selected_ids:
             st.session_state.elroll_edit_id = int(selected_ids[0])
-        # If none selected, keep current selection (so user can scroll without losing), unless they clear
-        clear_col, export_col = st.columns([1, 1])
-        with clear_col:
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
             if st.button(t("clear_selection")):
                 st.session_state.elroll_edit_id = None
-                # reset editor state
-                st.session_state["elroll_editor"] = df
+                st.session_state["elroll_table_selector"] = df
                 st.rerun()
-
-        with export_col:
+        with c2:
             if st.button(t("export_csv")):
-                export_df = df.drop(columns=["_reservation_id", t("edit")], errors="ignore")
+                export_df = df.drop(columns=[t("edit"), "_reservation_id"], errors="ignore")
                 csv = export_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=t("download_csv"),
@@ -762,52 +755,54 @@ if view_key == "el_roll":
                     mime="text/csv",
                 )
 
-        # Inline editor panel
+        # Inline editor (Edit button behavior)
         if st.session_state.elroll_edit_id:
-            reservation_data = get_reservation(st.session_state.elroll_edit_id)
-            if reservation_data:
+            reservation_data = get_reservation(int(st.session_state.elroll_edit_id))
+            if not reservation_data:
+                st.info(t("no_results"))
+            else:
                 res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff = reservation_data
                 check_in = parse_iso(check_in_s)
                 check_out = parse_iso(check_out_s)
 
                 st.divider()
-                st.subheader(f"{t('edit_reservation')}: {room_number} - {guest_name}")
+                st.subheader(t("edit_from_elroll"))
 
-                with st.form("elroll_inline_edit_form"):
+                with st.form("elroll_inline_edit_form", clear_on_submit=False):
                     rooms = get_rooms()
                     room_options = [r[1] for r in rooms]
-                    default_room_index = room_options.index(room_number) if room_number in room_options else 0
+                    room_idx = room_options.index(room_number) if room_number in room_options else 0
+                    room_number_new = st.selectbox(t("room"), room_options, index=room_idx)
 
-                    room_number_new = st.selectbox(t("room"), room_options, index=default_room_index)
                     guest_name_new = st.text_input(t("guest_name"), value=guest_name)
 
-                    c1, c2 = st.columns(2)
-                    with c1:
+                    d1, d2 = st.columns(2)
+                    with d1:
                         check_in_new = st.date_input(t("checkin_date"), value=check_in)
-                    with c2:
+                    with d2:
                         check_out_new = st.date_input(t("checkout_date"), value=check_out)
 
                     st.caption(f"{t('num_nights')}: {nights(check_in_new, check_out_new)}")
 
-                    c3, c4 = st.columns(2)
-                    with c3:
-                        num_guests_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
-                    with c4:
+                    e1, e2 = st.columns(2)
+                    with e1:
+                        pax_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
+                    with e2:
                         tariff_new = st.number_input(
                             t("tariff"),
                             min_value=0.0,
-                            value=float(tariff),
+                            value=float(tariff or 0.0),
                             step=10.0,
                             format="%.2f",
                         )
 
                     status_options = [s[0] for s in STATUSES]
-                    default_status_index = status_options.index(status) if status in status_options else 0
+                    status_idx = status_options.index(status) if status in status_options else 0
                     status_new = st.selectbox(
                         t("status"),
                         status_options,
-                        index=default_status_index,
-                        format_func=lambda x: dict(STATUSES)[x],
+                        index=status_idx,
+                        format_func=lambda x: STATUS_LABEL.get(x, x),
                     )
 
                     notes_new = st.text_area(t("observations"), value=notes or "", height=100)
@@ -817,7 +812,6 @@ if view_key == "el_roll":
                         save_btn = st.form_submit_button(t("update"), type="primary")
                     with b2:
                         cancel_btn = st.form_submit_button(t("cancel"))
-                    # Optional delete (kept simple)
                     with b3:
                         delete_btn = st.form_submit_button(f"🗑️ {t('delete')}")
 
@@ -831,18 +825,18 @@ if view_key == "el_roll":
                         elif check_out_new <= check_in_new:
                             st.error(t("date_range_error"))
                         else:
-                            success = save_reservation(
+                            ok = save_reservation(
                                 room_number=room_number_new,
                                 guest_name=guest_name_new,
                                 check_in=check_in_new,
                                 check_out=check_out_new,
-                                num_guests=int(num_guests_new),
+                                num_guests=int(pax_new),
                                 tariff=float(tariff_new),
                                 notes=notes_new,
                                 status=status_new,
                                 reservation_id=int(res_id),
                             )
-                            if success:
+                            if ok:
                                 st.success(t("saved"))
                                 st.session_state.elroll_edit_id = None
                                 st.rerun()
@@ -850,34 +844,28 @@ if view_key == "el_roll":
                                 st.error(t("room_occupied"))
 
                     if delete_btn:
-                        # Simple confirm in-session
                         st.session_state.delete_candidate = int(res_id)
                         st.rerun()
 
-                # Delete confirm block (outside form so it survives reruns)
+                # Delete confirmation (outside form)
                 if st.session_state.delete_candidate == int(res_id):
                     st.warning(t("delete_warning"))
-                    d1, d2 = st.columns(2)
-                    with d1:
+                    x1, x2 = st.columns(2)
+                    with x1:
                         if st.button(t("confirm_delete"), type="primary"):
                             delete_reservation(int(res_id))
                             st.session_state.delete_candidate = None
                             st.session_state.elroll_edit_id = None
                             st.success(t("deleted"))
                             st.rerun()
-                    with d2:
+                    with x2:
                         if st.button(t("cancel")):
                             st.session_state.delete_candidate = None
                             st.rerun()
-            else:
-                st.info(t("no_results"))
-    else:
-        st.info(t("no_results"))
 
 elif view_key == "register_guests":
     st.subheader(t("register_guests"))
 
-    # This view remains for adding new reservations manually
     with st.form("reservation_form"):
         rooms = get_rooms()
         room_options = [r[1] for r in rooms]
@@ -900,13 +888,13 @@ elif view_key == "register_guests":
             tariff = st.number_input(t("tariff"), min_value=0.0, value=0.0, step=10.0, format="%.2f")
 
         status_options = [s[0] for s in STATUSES]
-        status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: dict(STATUSES)[x])
+        status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: STATUS_LABEL.get(x, x))
 
         notes = st.text_area(t("observations"), value="", height=100)
 
-        submit_button = st.form_submit_button(t("save"), type="primary")
+        submit = st.form_submit_button(t("save"), type="primary")
 
-        if submit_button:
+        if submit:
             if not guest_name.strip():
                 st.error(t("guest_required"))
             elif check_out <= check_in:
@@ -933,10 +921,10 @@ elif view_key == "register_guests":
         st.divider()
         st.subheader(t("room_management"))
 
-        col1, col2 = st.columns([2, 1])
-        with col1:
+        c1, c2 = st.columns([2, 1])
+        with c1:
             new_room = st.text_input(t("new_room"), placeholder="e.g., 201")
-        with col2:
+        with c2:
             if st.button(t("add_room")):
                 if new_room.strip():
                     try:
@@ -950,10 +938,10 @@ elif view_key == "register_guests":
         if rooms:
             st.write("**Existing Rooms:**")
             for room_id, room_number in rooms:
-                c1, c2 = st.columns([3, 1])
-                with c1:
+                a, b = st.columns([3, 1])
+                with a:
                     st.write(f"• {room_number}")
-                with c2:
+                with b:
                     if st.button("🗑️", key=f"del_room_{room_id}"):
                         delete_room(room_id)
                         st.success(t("room_deleted"))
@@ -1015,7 +1003,7 @@ elif view_key == "search_guests":
                         t("pax"): int(num_guests),
                         t("tariff"): float(tariff),
                         "total": stay_revenue,
-                        t("status"): dict(STATUSES).get(status, status),
+                        t("status"): STATUS_LABEL.get(status, status),
                         t("observations"): notes,
                         "updated": updated_at,
                     }
@@ -1063,7 +1051,6 @@ elif view_key == "search_guests":
 elif view_key == "settings":
     st.subheader(t("settings"))
 
-    # ✅ Simplified mode switch removed entirely.
     st.markdown(f"### {t('language')}")
     lang_choice = st.selectbox(
         t("choose_language"),
@@ -1107,6 +1094,7 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.3")
+    st.write("Isla Verde Hotel Manager v2.4")
     st.write("Simplified El Roll System (always on)")
-    st.caption("© 2024 Hotel Isla Verd
+    # ✅ FIXED: properly terminated string literal
+    st.caption("© 2024 Hotel Isla Verde")
