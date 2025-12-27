@@ -12,7 +12,6 @@ from contextlib import contextmanager
 # ============================================================
 DB_PATH = "hotel.db"
 
-# Prefer secrets when available (recommended for deployment)
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
 
@@ -97,6 +96,8 @@ TEXT = {
         "total_guests": "Total Guests",
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
+        "available_rooms": "Available Rooms",
+        "available_rooms_list": "Available room numbers",
         "select_to_edit": "Select",
         "select_row_hint": "Tick a row in Select to edit below.",
         "clear_selection": "Clear selection",
@@ -183,6 +184,8 @@ TEXT = {
         "total_guests": "Huéspedes Totales",
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
+        "available_rooms": "Habitaciones Disponibles",
+        "available_rooms_list": "Números de habitaciones disponibles",
         "select_to_edit": "Seleccionar",
         "select_row_hint": "Marca una fila en Seleccionar para editar abajo.",
         "clear_selection": "Borrar selección",
@@ -514,7 +517,6 @@ def save_reservation(
             return False
         room_id = int(room_row[0])
 
-        # Overlap check (ignore noshow/checkedout)
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -669,9 +671,8 @@ def status_display(db_status: str) -> str:
 # ============================================================
 st.set_page_config(t("app_title"), layout="wide")
 
-# Init DB and create daily backup (first visit of the day)
 init_db()
-create_backup(force=False)
+create_backup(force=False)  # daily backup (first visit of the day)
 
 # Session defaults
 st.session_state.setdefault("authed", False)
@@ -679,26 +680,17 @@ st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
 
-# toast
 st.session_state.setdefault("register_toast", False)
-
-# el roll selection
 st.session_state.setdefault("elroll_selected_res_id", None)
 st.session_state.setdefault("elroll_editor_key_n", 0)
-
-# search state
 st.session_state.setdefault("search_last_input", "")
 st.session_state.setdefault("search_active_name", None)
-
-# delete confirm
 st.session_state.setdefault("delete_candidate", None)
 
-# load language
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-# simplified always on
-st.session_state.simplified_mode = True
+st.session_state.simplified_mode = True  # always on
 
 
 def show_register_toast_if_needed():
@@ -719,7 +711,6 @@ if not st.session_state.authed:
         else:
             st.error(t("incorrect_password"))
     st.stop()
-
 
 # ----------------- SIDEBAR NAV -----------------
 st.sidebar.title(t("menu"))
@@ -809,19 +800,34 @@ if view_key == "el_roll":
             st.session_state.elroll_editor_key_n += 1
             st.rerun()
 
-    # Stats (no revenue)
+    rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
+
+    # Available rooms count + list
+    available_rooms = [r["room_number"] for r in rooms_status if r["status"] == "available"]
+    available_count = len(available_rooms)
+
+    # Stats (no revenue) + available rooms (clickable)
     stats = get_dashboard_stats(st.session_state.selected_date)
-    a, b, c = st.columns(3)
+    a, b, c, d = st.columns(4)
     with a:
         st.metric(t("total_rooms"), stats["total_rooms"])
     with b:
         st.metric(t("total_guests"), stats["total_guests"])
     with c:
         st.metric(t("occupancy_rate"), f"{stats['occupancy_rate']:.1f}%")
+    with d:
+        # Clickable "window" (popover) with close button built-in
+        with st.popover(f"{t('available_rooms')}: {available_count}"):
+            st.markdown(f"**{t('available_rooms_list')}**")
+            if available_rooms:
+                # Nice grid display
+                cols = st.columns(6)
+                for i, rn in enumerate(available_rooms):
+                    cols[i % 6].write(f"• {rn}")
+            else:
+                st.info(t("no_results"))
 
     st.divider()
-
-    rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
 
     rows = []
     for r in rooms_status:
@@ -1190,7 +1196,6 @@ elif view_key == "settings":
 
     st.divider()
 
-    # Backups (Admin)
     if st.session_state.admin:
         st.markdown("### Backups")
 
@@ -1250,6 +1255,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v3.1")
+    st.write("Isla Verde Hotel Manager v3.2")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
