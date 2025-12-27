@@ -1,10 +1,11 @@
 import os
 import glob
+import time
 import sqlite3
 import pandas as pd
 import streamlit as st
 from datetime import date, datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
 from contextlib import contextmanager
 
 # ============================================================
@@ -15,13 +16,16 @@ DB_PATH = "hotel.db"
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
 
-STATUSES = [
+STATUSES: List[Tuple[str, str]] = [
     ("reserved", "Reserved"),
     ("checkedin", "Checked In"),
     ("noshow", "No Show"),
     ("checkedout", "Checked Out"),
 ]
 STATUS_LABEL = {k: v for k, v in STATUSES}
+
+CURRENCIES = [("EUR", "€"), ("USD", "$")]
+CURRENCY_SYMBOL = {code: sym for code, sym in CURRENCIES}
 
 # Daily DB backups
 BACKUP_DIR = "backups"
@@ -57,6 +61,9 @@ TEXT = {
         "guest_name": "Guest / Reservation Name",
         "pax": "PAX",
         "tariff": "Tariff",
+        "currency": "Currency",
+        "euros": "Euros (€)",
+        "dollars": "Dollars ($)",
         "observations": "Observations",
         "status": "Status",
         "available": "Available",
@@ -119,6 +126,11 @@ TEXT = {
         "no_backups": "No backups found yet.",
         "last_backup": "Last backup",
         "latest_backup": "Latest backup",
+        "totals_by_currency": "Totals by currency",
+        "total_revenue": "Total Revenue",
+        "total": "Total",
+        "nights": "Nights",
+        "stays": "Total Stays",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -146,6 +158,9 @@ TEXT = {
         "guest_name": "Nombre del Huésped / Reserva",
         "pax": "PAX",
         "tariff": "Tarifa",
+        "currency": "Moneda",
+        "euros": "Euros (€)",
+        "dollars": "Dólares ($)",
         "observations": "Observaciones",
         "status": "Estado",
         "available": "Disponible",
@@ -208,6 +223,11 @@ TEXT = {
         "no_backups": "Aún no hay backups.",
         "last_backup": "Último backup",
         "latest_backup": "Último backup",
+        "totals_by_currency": "Totales por moneda",
+        "total_revenue": "Ingresos Totales",
+        "total": "Total",
+        "nights": "Noches",
+        "stays": "Estancias Totales",
     },
 }
 
@@ -252,10 +272,7 @@ def cleanup_old_backups(keep_days: int = BACKUP_RETENTION_DAYS):
 
 
 def create_backup(force: bool = False) -> Optional[str]:
-    """
-    Creates at most one backup per day unless force=True.
-    Returns backup path if created or exists, else None.
-    """
+    """Creates at most one backup per day unless force=True."""
     ensure_backup_dir()
     today = date.today().isoformat()
     backup_path = os.path.join(BACKUP_DIR, f"hotel_{today}.db")
@@ -283,7 +300,6 @@ def get_latest_backup_path() -> Optional[str]:
 
 
 def get_latest_backup_name() -> str:
-    """Option 3: show last backup inside the UI."""
     p = get_latest_backup_path()
     return os.path.basename(p) if p else t("no_backups")
 
@@ -375,6 +391,7 @@ def init_db():
             );
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reservations (
@@ -387,13 +404,17 @@ def init_db():
                 notes TEXT DEFAULT "",
                 num_guests INTEGER DEFAULT 1,
                 tariff REAL DEFAULT 0,
+                currency TEXT DEFAULT "EUR",
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
             );
             """
         )
+
+        # migrations / ensure columns exist for older DBs
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
+        ensure_column(conn, "reservations", 'currency TEXT DEFAULT "EUR"', "currency")
         conn.commit()
 
         cur = conn.execute("SELECT COUNT(*) FROM rooms;")
@@ -404,12 +425,29 @@ def init_db():
 
 
 # ============================================================
-# DATA FUNCTIONS
+# HELPERS
 # ============================================================
 def normalize_guest_name(name: str) -> str:
     return " ".join((name or "").strip().split())
 
 
+def fmt_money(amount: float, currency: str) -> str:
+    sym = CURRENCY_SYMBOL.get(currency, "")
+    try:
+        return f"{sym}{float(amount):.2f}"
+    except Exception:
+        return f"{sym}{amount}"
+
+
+def status_display(db_status: str) -> str:
+    if db_status == "available":
+        return t("available")
+    return STATUS_LABEL.get(db_status, db_status)
+
+
+# ============================================================
+# DATA FUNCTIONS
+# ============================================================
 def get_rooms():
     with db() as conn:
         return conn.execute("SELECT id, number FROM rooms ORDER BY number;").fetchall()
@@ -431,7 +469,7 @@ def get_reservations_for_date(selected_date: date):
     with db() as conn:
         return conn.execute(
             """
-            SELECT r.id, rm.number, r.guest_name, r.num_guests, r.tariff, r.notes, r.status,
+            SELECT r.id, rm.number, r.guest_name, r.num_guests, r.tariff, r.currency, r.notes, r.status,
                    r.check_in, r.check_out
             FROM reservations r
             JOIN rooms rm ON r.room_id = rm.id
@@ -446,7 +484,7 @@ def get_all_rooms_with_status(selected_date: date):
     rooms = get_rooms()
     reservations = get_reservations_for_date(selected_date)
 
-    reservation_map = {}
+    reservation_map: Dict[str, dict] = {}
     for res in reservations:
         room_number = res[1]
         reservation_map[room_number] = {
@@ -454,8 +492,11 @@ def get_all_rooms_with_status(selected_date: date):
             "guest_name": res[2] or "",
             "num_guests": int(res[3] or 0),
             "tariff": float(res[4] or 0.0),
-            "notes": res[5] or "",
-            "status": res[6],
+            "currency": (res[5] or "EUR").upper(),
+            "notes": res[6] or "",
+            "status": res[7],
+            "check_in": parse_iso(res[8]),
+            "check_out": parse_iso(res[9]),
         }
 
     room_status = []
@@ -468,6 +509,7 @@ def get_all_rooms_with_status(selected_date: date):
                     "guest_name": res["guest_name"],
                     "num_guests": res["num_guests"],
                     "tariff": res["tariff"],
+                    "currency": res["currency"],
                     "notes": res["notes"],
                     "status": res["status"],
                     "reservation_id": res["id"],
@@ -481,6 +523,7 @@ def get_all_rooms_with_status(selected_date: date):
                     "guest_name": "",
                     "num_guests": 0,
                     "tariff": 0.0,
+                    "currency": "EUR",
                     "notes": "",
                     "status": "available",
                     "reservation_id": None,
@@ -495,7 +538,7 @@ def get_reservation(res_id: int):
         return conn.execute(
             """
             SELECT r.id, rm.number, r.guest_name, r.status, r.check_in, r.check_out,
-                   r.notes, r.num_guests, r.tariff
+                   r.notes, r.num_guests, r.tariff, r.currency
             FROM reservations r
             JOIN rooms rm ON r.room_id = rm.id
             WHERE r.id = ?;
@@ -511,11 +554,15 @@ def save_reservation(
     check_out: date,
     num_guests: int,
     tariff: float,
+    currency: str,
     notes: str,
     status: str,
     reservation_id: Optional[int] = None,
 ) -> bool:
     guest_name = normalize_guest_name(guest_name)
+    currency = (currency or "EUR").upper()
+    if currency not in CURRENCY_SYMBOL:
+        currency = "EUR"
 
     with db() as conn:
         room_row = conn.execute("SELECT id FROM rooms WHERE number = ?;", (room_number,)).fetchone()
@@ -523,6 +570,7 @@ def save_reservation(
             return False
         room_id = int(room_row[0])
 
+        # overlap check (ignore noshow/checkedout)
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -555,7 +603,7 @@ def save_reservation(
             conn.execute(
                 """
                 UPDATE reservations
-                SET guest_name=?, status=?, check_in=?, check_out=?, notes=?, num_guests=?, tariff=?, updated_at=?
+                SET guest_name=?, status=?, check_in=?, check_out=?, notes=?, num_guests=?, tariff=?, currency=?, updated_at=?
                 WHERE id=?;
                 """,
                 (
@@ -566,6 +614,7 @@ def save_reservation(
                     notes,
                     int(num_guests),
                     float(tariff),
+                    currency,
                     tstamp,
                     int(reservation_id),
                 ),
@@ -574,8 +623,8 @@ def save_reservation(
             conn.execute(
                 """
                 INSERT INTO reservations(room_id, guest_name, status, check_in, check_out,
-                                       notes, num_guests, tariff, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?);
+                                       notes, num_guests, tariff, currency, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?);
                 """,
                 (
                     room_id,
@@ -586,6 +635,7 @@ def save_reservation(
                     notes,
                     int(num_guests),
                     float(tariff),
+                    currency,
                     tstamp,
                     tstamp,
                 ),
@@ -624,7 +674,7 @@ def get_guest_reservations(guest_name: str):
         return conn.execute(
             """
             SELECT r.id, rm.number, r.status, r.check_in, r.check_out,
-                   r.notes, r.num_guests, r.tariff, r.updated_at
+                   r.notes, r.num_guests, r.tariff, r.currency, r.updated_at
             FROM reservations r
             JOIN rooms rm ON r.room_id = rm.id
             WHERE r.guest_name = ?
@@ -658,26 +708,20 @@ def get_dashboard_stats(selected_date: date):
 
     occupancy_rate = (occupied_rooms / total_rooms * 100) if total_rooms > 0 else 0.0
     return {
-        "total_rooms": total_rooms,
-        "occupied_rooms": occupied_rooms,
-        "total_guests": total_guests,
-        "occupancy_rate": occupancy_rate,
+        "total_rooms": int(total_rooms),
+        "occupied_rooms": int(occupied_rooms),
+        "total_guests": int(total_guests),
+        "occupancy_rate": float(occupancy_rate),
     }
-
-
-def status_display(db_status: str) -> str:
-    if db_status == "available":
-        return t("available")
-    return STATUS_LABEL.get(db_status, db_status)
 
 
 # ============================================================
 # STREAMLIT APP START
 # ============================================================
-st.set_page_config(t("app_title"), layout="wide")
+st.set_page_config(TEXT["en"]["app_title"], layout="wide")
 
 init_db()
-create_backup(force=False)  # create daily backup on first open of the day
+create_backup(force=False)  # daily backup on first open of the day
 
 # Session defaults
 st.session_state.setdefault("authed", False)
@@ -685,7 +729,7 @@ st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
 
-st.session_state.setdefault("register_toast", False)
+st.session_state.setdefault("register_popup", False)
 st.session_state.setdefault("elroll_selected_res_id", None)
 st.session_state.setdefault("elroll_editor_key_n", 0)
 st.session_state.setdefault("search_last_input", "")
@@ -695,13 +739,14 @@ st.session_state.setdefault("delete_candidate", None)
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-st.session_state.simplified_mode = True  # always on
 
-
-def show_register_toast_if_needed():
-    if st.session_state.get("register_toast", False):
-        st.toast(t("register_success"), icon="✅")
-        st.session_state.register_toast = False
+def show_register_popup_if_needed():
+    if st.session_state.get("register_popup", False):
+        holder = st.empty()
+        holder.success(t("register_success"))
+        time.sleep(3)
+        holder.empty()
+        st.session_state.register_popup = False
 
 
 # ----------------- LOGIN -----------------
@@ -761,7 +806,7 @@ if st.sidebar.button(t("logout")):
 
 # ----------------- MAIN HEADER -----------------
 st.title(t("app_title"))
-show_register_toast_if_needed()
+show_register_popup_if_needed()
 
 # ============================================================
 # VIEWS
@@ -802,7 +847,6 @@ if view_key == "el_roll":
             st.rerun()
 
     rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
-
     available_rooms = [r["room_number"] for r in rooms_status if r["status"] == "available"]
     available_count = len(available_rooms)
 
@@ -828,12 +872,15 @@ if view_key == "el_roll":
 
     rows = []
     for r in rooms_status:
+        tariff_text = ""
+        if r["occupied"] and float(r["tariff"] or 0) > 0:
+            tariff_text = fmt_money(float(r["tariff"]), r.get("currency", "EUR"))
         rows.append(
             {
                 t("room"): r["room_number"],
                 t("reservation_name"): r["guest_name"],
                 t("pax"): r["num_guests"] if r["num_guests"] else "",
-                t("tariff"): float(r["tariff"]) if r["tariff"] else 0.0,
+                t("tariff"): tariff_text,
                 t("observations"): r["notes"],
                 t("status"): status_display(r["status"]),
                 "_reservation_id": r["reservation_id"],
@@ -864,8 +911,8 @@ if view_key == "el_roll":
             column_config={
                 t("room"): st.column_config.TextColumn(width="small"),
                 t("reservation_name"): st.column_config.TextColumn(width="medium"),
-                t("pax"): st.column_config.NumberColumn(width="small"),
-                t("tariff"): st.column_config.NumberColumn(format="€%.2f", width="small"),
+                t("pax"): st.column_config.TextColumn(width="small"),
+                t("tariff"): st.column_config.TextColumn(width="small"),
                 t("observations"): st.column_config.TextColumn(width="large"),
                 t("status"): st.column_config.TextColumn(width="medium"),
                 t("select_to_edit"): st.column_config.CheckboxColumn(width="small"),
@@ -900,7 +947,7 @@ if view_key == "el_roll":
         if st.session_state.elroll_selected_res_id is not None:
             reservation_data = get_reservation(int(st.session_state.elroll_selected_res_id))
             if reservation_data:
-                res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff = reservation_data
+                res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff, currency = reservation_data
                 st.divider()
                 st.subheader(t("edit_from_elroll"))
 
@@ -920,17 +967,36 @@ if view_key == "el_roll":
 
                     st.caption(f"{t('num_nights')}: {nights(check_in_new, check_out_new)}")
 
-                    e1, e2 = st.columns(2)
+                    e1, e2, e3 = st.columns([1, 1, 1])
                     with e1:
                         pax_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
                     with e2:
-                        tariff_new = st.number_input(t("tariff"), min_value=0.0, value=float(tariff or 0.0),
-                                                     step=10.0, format="%.2f")
+                        tariff_new = st.number_input(
+                            t("tariff"),
+                            min_value=0.0,
+                            value=float(tariff or 0.0),
+                            step=10.0,
+                            format="%.2f",
+                        )
+                    with e3:
+                        currency_labels = {"EUR": t("euros"), "USD": t("dollars")}
+                        currency_options = ["EUR", "USD"]
+                        cidx = currency_options.index((currency or "EUR").upper()) if (currency or "EUR").upper() in currency_options else 0
+                        currency_new = st.selectbox(
+                            t("currency"),
+                            currency_options,
+                            index=cidx,
+                            format_func=lambda x: currency_labels.get(x, x),
+                        )
 
                     status_options = [s[0] for s in STATUSES]
                     status_idx = status_options.index(status) if status in status_options else 0
-                    status_new = st.selectbox(t("status"), status_options, index=status_idx,
-                                             format_func=lambda x: STATUS_LABEL.get(x, x))
+                    status_new = st.selectbox(
+                        t("status"),
+                        status_options,
+                        index=status_idx,
+                        format_func=lambda x: STATUS_LABEL.get(x, x),
+                    )
 
                     notes_new = st.text_area(t("observations"), value=notes or "", height=100)
 
@@ -960,6 +1026,7 @@ if view_key == "el_roll":
                                 check_out=check_out_new,
                                 num_guests=int(pax_new),
                                 tariff=float(tariff_new),
+                                currency=currency_new,
                                 notes=notes_new,
                                 status=status_new,
                                 reservation_id=int(res_id),
@@ -1010,11 +1077,19 @@ elif view_key == "register_guests":
 
         st.caption(f"{t('num_nights')}: {nights(check_in, check_out)}")
 
-        col3, col4 = st.columns(2)
+        col3, col4, col5 = st.columns([1, 1, 1])
         with col3:
             num_guests = st.number_input(t("pax"), min_value=1, max_value=20, value=1)
         with col4:
             tariff = st.number_input(t("tariff"), min_value=0.0, value=0.0, step=10.0, format="%.2f")
+        with col5:
+            currency_labels = {"EUR": t("euros"), "USD": t("dollars")}
+            currency = st.selectbox(
+                t("currency"),
+                ["EUR", "USD"],
+                index=0,
+                format_func=lambda x: currency_labels.get(x, x),
+            )
 
         status_options = [s[0] for s in STATUSES]
         status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: STATUS_LABEL.get(x, x))
@@ -1035,11 +1110,12 @@ elif view_key == "register_guests":
                     check_out=check_out,
                     num_guests=int(num_guests),
                     tariff=float(tariff),
+                    currency=currency,
                     notes=notes,
                     status=status,
                 )
                 if ok:
-                    st.session_state.register_toast = True
+                    st.session_state.register_popup = True
                     st.rerun()
                 else:
                     st.error(t("room_occupied"))
@@ -1113,17 +1189,18 @@ elif view_key == "search_guests":
 
         if reservations:
             table_data = []
-            total_revenue = 0.0
+            totals_by_currency: Dict[str, float] = {"EUR": 0.0, "USD": 0.0}
             total_nights = 0
 
             for res in reservations:
-                _, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, updated_at = res
+                _, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, currency, updated_at = res
+                currency = (currency or "EUR").upper()
                 check_in = parse_iso(check_in_str)
                 check_out = parse_iso(check_out_str)
                 nn = nights(check_in, check_out)
                 total_nights += nn
-                stay_revenue = float(tariff) * nn
-                total_revenue += stay_revenue
+                stay_total = float(tariff or 0.0) * nn
+                totals_by_currency[currency] = totals_by_currency.get(currency, 0.0) + stay_total
 
                 table_data.append(
                     {
@@ -1132,8 +1209,8 @@ elif view_key == "search_guests":
                         "Check-out": check_out,
                         "Nights": nn,
                         "PAX": int(num_guests),
-                        "Tariff": float(tariff),
-                        "Total": stay_revenue,
+                        "Tariff": fmt_money(float(tariff or 0.0), currency),
+                        "Total": fmt_money(float(stay_total), currency),
                         "Status": STATUS_LABEL.get(status, status),
                         "Notes": notes,
                         "Updated": updated_at,
@@ -1145,11 +1222,17 @@ elif view_key == "search_guests":
 
             m1, m2, m3 = st.columns(3)
             with m1:
-                st.metric("Total Stays", len(reservations))
+                st.metric(t("stays"), len(reservations))
             with m2:
-                st.metric("Total Nights", total_nights)
+                st.metric(t("nights"), total_nights)
             with m3:
-                st.metric("Total Revenue", f"€{total_revenue:.2f}")
+                # Show totals by currency in one line
+                parts = []
+                for code in ["EUR", "USD"]:
+                    amt = totals_by_currency.get(code, 0.0)
+                    if abs(amt) > 0.0001:
+                        parts.append(fmt_money(amt, code))
+                st.metric(t("totals_by_currency"), " / ".join(parts) if parts else "—")
 
             if st.button(t("export_csv")):
                 csv = df.to_csv(index=False).encode("utf-8")
@@ -1182,7 +1265,7 @@ elif view_key == "settings":
 
     st.divider()
 
-    # ===== Option 3 (UI visibility): show latest backup =====
+    # Option 3: show latest backup inside the UI
     st.info(f"{t('latest_backup')}: {get_latest_backup_name()}")
 
     if st.session_state.admin:
@@ -1244,6 +1327,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v3.3")
-    st.write("Simplified El Roll System (always on)")
+    st.write("Isla Verde Hotel Manager v3.4")
+    st.write("El Roll System")
     st.caption("© 2024 Hotel Isla Verde")
