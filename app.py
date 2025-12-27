@@ -100,7 +100,7 @@ TEXT = {
         "rooms_reset": "Rooms reset to defaults!",
         "suggestions": "Suggestions",
         "open_guest": "Open guest",
-        "search_tip": "Start typing to see suggestions, like Google.",
+        "register_success": "Register successful",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -179,7 +179,7 @@ TEXT = {
         "rooms_reset": "¡Habitaciones restauradas!",
         "suggestions": "Sugerencias",
         "open_guest": "Abrir huésped",
-        "search_tip": "Empieza a escribir para ver sugerencias, como Google.",
+        "register_success": "Registro exitoso",
     },
 }
 
@@ -597,11 +597,6 @@ st.markdown(
   max-width: 980px;
   margin: 0 auto;
 }
-.iv-search-title{
-  font-size: 0.95rem;
-  opacity: 0.85;
-  margin-bottom: 8px;
-}
 .iv-search-card{
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 999px;
@@ -657,16 +652,6 @@ div[data-testid="stTextInput"] > label {display:none;}
 .iv-suggestions .iv-sugg-item:hover{
   background: rgba(99,102,241,0.08);
 }
-.iv-pill{
-  display:inline-block;
-  font-size:0.75rem;
-  padding:2px 10px;
-  border-radius:999px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.03);
-  margin-left: 8px;
-  opacity:0.9;
-}
 </style>
 """,
     unsafe_allow_html=True,
@@ -681,6 +666,9 @@ st.session_state.setdefault("authed", False)
 st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
+
+# Register success toast flag
+st.session_state.setdefault("register_toast", False)
 
 # Search Guests state
 st.session_state.setdefault("search_query", "")
@@ -764,8 +752,18 @@ if st.sidebar.button(t("logout")):
 st.title(t("app_title"))
 
 
+# ----------------- TOAST (3 seconds) -----------------
+def show_register_toast_if_needed():
+    if st.session_state.get("register_toast", False):
+        # toast disappears automatically; we also clear flag so it won't repeat
+        st.toast(t("register_success"), icon="✅")
+        st.session_state.register_toast = False
+
+
 # ----------------- VIEWS -----------------
 if view_key == "el_roll":
+    show_register_toast_if_needed()
+
     # Date controls
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
     with col1:
@@ -996,6 +994,9 @@ if view_key == "el_roll":
                             st.rerun()
 
 elif view_key == "register_guests":
+    # Show toast here too (if redirected)
+    show_register_toast_if_needed()
+
     st.subheader(t("register_guests"))
 
     with st.form("reservation_form"):
@@ -1042,7 +1043,8 @@ elif view_key == "register_guests":
                     status=status,
                 )
                 if ok:
-                    st.success(t("saved"))
+                    # ✅ green toast for ~3 seconds (Streamlit auto-dismiss)
+                    st.session_state.register_toast = True
                     st.rerun()
                 else:
                     st.error(t("room_occupied"))
@@ -1078,8 +1080,9 @@ elif view_key == "register_guests":
                         st.rerun()
 
 elif view_key == "search_guests":
+    show_register_toast_if_needed()
+
     st.subheader(t("search_guests"))
-    st.caption(t("search_tip"))
 
     # --- Google-like search UI ---
     st.markdown('<div class="iv-search-wrap">', unsafe_allow_html=True)
@@ -1093,7 +1096,6 @@ elif view_key == "search_guests":
         unsafe_allow_html=True,
     )
 
-    # Input (inside the "pill" card)
     search_input = st.text_input(
         "",
         value=st.session_state.search_last_input,
@@ -1102,21 +1104,17 @@ elif view_key == "search_guests":
     )
     st.markdown("</div></div></div>", unsafe_allow_html=True)
 
-    # Update stored input
     st.session_state.search_last_input = search_input
 
-    # Suggestions (like Google dropdown)
     suggestions: List[str] = []
     if search_input and len(search_input.strip()) >= 2:
         suggestions = search_guests(search_input.strip(), limit=10)
 
-    # Clickable suggestion list
     if suggestions:
         st.markdown('<div class="iv-suggestions">', unsafe_allow_html=True)
         st.markdown(f'<div class="iv-sugg-header">{t("suggestions")}</div>', unsafe_allow_html=True)
 
         for s in suggestions:
-            # Each suggestion as a full-width button but visually like a row
             cols = st.columns([1, 6, 2])
             with cols[0]:
                 st.write("🔎")
@@ -1126,20 +1124,22 @@ elif view_key == "search_guests":
                     st.session_state.search_query = s
                     st.rerun()
             with cols[2]:
-                st.write("")  # spacing
+                st.write("")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # If user hits enter / types exact name, allow "open guest"
     open_cols = st.columns([2, 8])
     with open_cols[0]:
-        open_btn = st.button(t("open_guest"), use_container_width=True, disabled=not (search_input and len(search_input.strip()) >= 2))
+        open_btn = st.button(
+            t("open_guest"),
+            use_container_width=True,
+            disabled=not (search_input and len(search_input.strip()) >= 2),
+        )
     if open_btn:
         st.session_state.search_query = search_input.strip()
         st.session_state.search_active_name = search_input.strip()
         st.rerun()
 
-    # Results
     active_name = st.session_state.search_active_name or st.session_state.search_query
     if active_name and len(active_name.strip()) >= 2:
         guest_name = active_name.strip()
@@ -1216,6 +1216,8 @@ elif view_key == "search_guests":
             st.info(t("no_results"))
 
 elif view_key == "settings":
+    show_register_toast_if_needed()
+
     st.subheader(t("settings"))
 
     st.markdown(f"### {t('language')}")
@@ -1262,6 +1264,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.7")
+    st.write("Isla Verde Hotel Manager v2.8")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
