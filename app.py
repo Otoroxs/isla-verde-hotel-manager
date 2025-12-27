@@ -1,13 +1,18 @@
-import streamlit as st
+import os
+import glob
 import sqlite3
 import pandas as pd
+import streamlit as st
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 from contextlib import contextmanager
 
-# ----------------- CONFIG -----------------
+# ============================================================
+# CONFIG
+# ============================================================
 DB_PATH = "hotel.db"
 
+# Prefer secrets when available (recommended for deployment)
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
 
@@ -19,8 +24,13 @@ STATUSES = [
 ]
 STATUS_LABEL = {k: v for k, v in STATUSES}
 
+# Daily DB backups
+BACKUP_DIR = "backups"
+BACKUP_RETENTION_DAYS = 30  # keep last 30 daily backups
 
-# ----------------- I18N -----------------
+# ============================================================
+# I18N
+# ============================================================
 TEXT = {
     "en": {
         "app_title": "Isla Verde Hotel Manager",
@@ -44,7 +54,8 @@ TEXT = {
         "today": "Today",
         "prev": "◀",
         "next": "▶",
-        "guest_name": "Reservation Name",
+        "reservation_name": "Reservation Name",
+        "guest_name": "Guest / Reservation Name",
         "pax": "PAX",
         "tariff": "Tariff",
         "observations": "Observations",
@@ -54,6 +65,7 @@ TEXT = {
         "save": "Save",
         "update": "Update",
         "delete": "Delete",
+        "edit": "Edit",
         "saved": "Saved successfully!",
         "deleted": "Deleted successfully!",
         "search_placeholder": "Search reservations…",
@@ -67,7 +79,7 @@ TEXT = {
         "delete_warning": "Are you sure you want to delete this reservation?",
         "room_occupied": "Room is already occupied on these dates",
         "date_range_error": "Check-out must be after check-in",
-        "guest_required": "Reservation name is required",
+        "name_required": "Reservation name is required",
         "language": "Language",
         "english": "English",
         "spanish": "Spanish",
@@ -85,7 +97,6 @@ TEXT = {
         "total_guests": "Total Guests",
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
-        "history_for": "History for",
         "select_to_edit": "Select",
         "select_row_hint": "Tick a row in Select to edit below.",
         "clear_selection": "Clear selection",
@@ -97,12 +108,15 @@ TEXT = {
         "reset_rooms_confirm": "Reset all rooms to defaults?",
         "rooms_reset": "Rooms reset to defaults!",
         "suggestions": "Suggestions",
-        "open_guest": "Open",
-        "register_success": "Register successful",
-        "quick_actions": "Quick actions",
         "clear_search": "Clear search",
         "results": "Results",
-        "no_res_for_guest": "No reservations found for this name.",
+        "no_res_for_name": "No reservations found for this name.",
+        "register_success": "Register successful",
+        "backup_now": "Backup now",
+        "backup_created": "Backup created",
+        "download_latest_backup": "Download latest backup",
+        "no_backups": "No backups found yet.",
+        "last_backup": "Last backup",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -126,7 +140,8 @@ TEXT = {
         "today": "Hoy",
         "prev": "◀",
         "next": "▶",
-        "guest_name": "Nombre de la Reserva",
+        "reservation_name": "Nombre de la Reserva",
+        "guest_name": "Nombre del Huésped / Reserva",
         "pax": "PAX",
         "tariff": "Tarifa",
         "observations": "Observaciones",
@@ -136,6 +151,7 @@ TEXT = {
         "save": "Guardar",
         "update": "Actualizar",
         "delete": "Borrar",
+        "edit": "Editar",
         "saved": "¡Guardado exitosamente!",
         "deleted": "¡Borrado exitosamente!",
         "search_placeholder": "Buscar reservas…",
@@ -149,7 +165,7 @@ TEXT = {
         "delete_warning": "¿Estás seguro de que quieres borrar esta reserva?",
         "room_occupied": "La habitación ya está ocupada en estas fechas",
         "date_range_error": "La salida debe ser después de la entrada",
-        "guest_required": "El nombre de la reserva es obligatorio",
+        "name_required": "El nombre de la reserva es obligatorio",
         "language": "Idioma",
         "english": "Inglés",
         "spanish": "Español",
@@ -167,7 +183,6 @@ TEXT = {
         "total_guests": "Huéspedes Totales",
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
-        "history_for": "Historial de",
         "select_to_edit": "Seleccionar",
         "select_row_hint": "Marca una fila en Seleccionar para editar abajo.",
         "clear_selection": "Borrar selección",
@@ -179,12 +194,15 @@ TEXT = {
         "reset_rooms_confirm": "¿Restablecer todas las habitaciones a valores por defecto?",
         "rooms_reset": "¡Habitaciones restauradas!",
         "suggestions": "Sugerencias",
-        "open_guest": "Abrir",
-        "register_success": "Registro exitoso",
-        "quick_actions": "Acciones rápidas",
         "clear_search": "Limpiar búsqueda",
         "results": "Resultados",
-        "no_res_for_guest": "No hay reservas para este nombre.",
+        "no_res_for_name": "No hay reservas para este nombre.",
+        "register_success": "Registro exitoso",
+        "backup_now": "Hacer backup ahora",
+        "backup_created": "Backup creado",
+        "download_latest_backup": "Descargar último backup",
+        "no_backups": "Aún no hay backups.",
+        "last_backup": "Último backup",
     },
 }
 
@@ -194,18 +212,9 @@ def t(key: str) -> str:
     return TEXT.get(lang, TEXT["en"]).get(key, key)
 
 
-# ----------------- DEFAULT ROOMS -----------------
-def default_room_numbers() -> List[str]:
-    nums: List[int] = []
-    nums += list(range(101, 108))  # 101-107
-    nums += list(range(201, 212))  # 201-211
-    nums += list(range(214, 220))  # 214-219
-    nums += list(range(221, 229))  # 221-228
-    nums += list(range(301, 309))  # 301-308
-    return [str(n) for n in nums]
-
-
-# ----------------- DB HELPERS -----------------
+# ============================================================
+# DB + BACKUPS
+# ============================================================
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -214,6 +223,58 @@ def db():
         yield conn
     finally:
         conn.close()
+
+
+def ensure_backup_dir():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def cleanup_old_backups(keep_days: int = BACKUP_RETENTION_DAYS):
+    ensure_backup_dir()
+    cutoff = date.today() - timedelta(days=keep_days)
+    for path in glob.glob(os.path.join(BACKUP_DIR, "hotel_*.db")):
+        filename = os.path.basename(path)
+        try:
+            stamp = filename.replace("hotel_", "").replace(".db", "")
+            d = date.fromisoformat(stamp)
+        except Exception:
+            continue
+        if d < cutoff:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+
+def create_backup(force: bool = False) -> Optional[str]:
+    """
+    Creates at most one backup per day unless force=True.
+    Returns backup path if created or exists, else None.
+    """
+    ensure_backup_dir()
+    today = date.today().isoformat()
+    backup_path = os.path.join(BACKUP_DIR, f"hotel_{today}.db")
+
+    if os.path.exists(backup_path) and not force:
+        return backup_path
+
+    with db() as conn:
+        conn.commit()
+        bconn = sqlite3.connect(backup_path)
+        try:
+            conn.backup(bconn)
+            bconn.commit()
+        finally:
+            bconn.close()
+
+    cleanup_old_backups()
+    return backup_path
+
+
+def get_latest_backup_path() -> Optional[str]:
+    ensure_backup_dir()
+    backups = sorted(glob.glob(os.path.join(BACKUP_DIR, "hotel_*.db")))
+    return backups[-1] if backups else None
 
 
 def now_utc() -> str:
@@ -283,6 +344,16 @@ def set_setting(key: str, value: str):
         conn.commit()
 
 
+def default_room_numbers() -> List[str]:
+    nums: List[int] = []
+    nums += list(range(101, 108))  # 101-107
+    nums += list(range(201, 212))  # 201-211
+    nums += list(range(214, 220))  # 214-219
+    nums += list(range(221, 229))  # 221-228
+    nums += list(range(301, 309))  # 301-308
+    return [str(n) for n in nums]
+
+
 def init_db():
     with db() as conn:
         conn.execute(
@@ -323,7 +394,9 @@ def init_db():
             conn.commit()
 
 
-# ----------------- DATA FUNCTIONS -----------------
+# ============================================================
+# DATA FUNCTIONS
+# ============================================================
 def normalize_guest_name(name: str) -> str:
     return " ".join((name or "").strip().split())
 
@@ -374,8 +447,6 @@ def get_all_rooms_with_status(selected_date: date):
             "tariff": float(res[4] or 0.0),
             "notes": res[5] or "",
             "status": res[6],
-            "check_in": res[7],
-            "check_out": res[8],
         }
 
     room_status = []
@@ -443,6 +514,7 @@ def save_reservation(
             return False
         room_id = int(room_row[0])
 
+        # Overlap check (ignore noshow/checkedout)
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -592,42 +664,46 @@ def status_display(db_status: str) -> str:
     return STATUS_LABEL.get(db_status, db_status)
 
 
-# ----------------- UI -----------------
+# ============================================================
+# STREAMLIT APP START
+# ============================================================
 st.set_page_config(t("app_title"), layout="wide")
 
-# ----------------- INIT -----------------
+# Init DB and create daily backup (first visit of the day)
 init_db()
+create_backup(force=False)
 
+# Session defaults
 st.session_state.setdefault("authed", False)
 st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
 
-# Toast flag for register success
+# toast
 st.session_state.setdefault("register_toast", False)
 
-# El Roll selection
+# el roll selection
 st.session_state.setdefault("elroll_selected_res_id", None)
 st.session_state.setdefault("elroll_editor_key_n", 0)
 
-# Search state
+# search state
 st.session_state.setdefault("search_last_input", "")
 st.session_state.setdefault("search_active_name", None)
 
-# Delete confirm
+# delete confirm
 st.session_state.setdefault("delete_candidate", None)
 
-# Settings
+# load language
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-# Simplified always on (switch removed)
+# simplified always on
 st.session_state.simplified_mode = True
 
 
 def show_register_toast_if_needed():
     if st.session_state.get("register_toast", False):
-        st.toast(t("register_success"), icon="✅")  # auto dismiss
+        st.toast(t("register_success"), icon="✅")
         st.session_state.register_toast = False
 
 
@@ -645,7 +721,7 @@ if not st.session_state.authed:
     st.stop()
 
 
-# ----------------- SIDEBAR -----------------
+# ----------------- SIDEBAR NAV -----------------
 st.sidebar.title(t("menu"))
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
@@ -658,6 +734,7 @@ VIEW_MAP = {
 }
 view_key = VIEW_MAP[view]
 
+# ----------------- ADMIN SIDEBAR -----------------
 st.sidebar.divider()
 st.sidebar.subheader(t("admin_sensitive"))
 if st.session_state.admin:
@@ -686,11 +763,13 @@ if st.sidebar.button(t("logout")):
     st.session_state.admin = False
     st.rerun()
 
-# ----------------- MAIN -----------------
+# ----------------- MAIN HEADER -----------------
 st.title(t("app_title"))
 show_register_toast_if_needed()
 
-# ----------------- VIEWS -----------------
+# ============================================================
+# VIEWS
+# ============================================================
 if view_key == "el_roll":
     # Date controls
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
@@ -749,12 +828,12 @@ if view_key == "el_roll":
         rows.append(
             {
                 t("room"): r["room_number"],
-                t("guest_name"): r["guest_name"],
+                t("reservation_name"): r["guest_name"],
                 t("pax"): r["num_guests"] if r["num_guests"] else "",
                 t("tariff"): float(r["tariff"]) if r["tariff"] else 0.0,
                 t("observations"): r["notes"],
                 t("status"): status_display(r["status"]),
-                "_reservation_id": r["reservation_id"],  # internal
+                "_reservation_id": r["reservation_id"],
                 t("select_to_edit"): False,
             }
         )
@@ -772,7 +851,7 @@ if view_key == "el_roll":
             hide_index=True,
             disabled=[
                 t("room"),
-                t("guest_name"),
+                t("reservation_name"),
                 t("pax"),
                 t("tariff"),
                 t("observations"),
@@ -781,7 +860,7 @@ if view_key == "el_roll":
             ],
             column_config={
                 t("room"): st.column_config.TextColumn(width="small"),
-                t("guest_name"): st.column_config.TextColumn(width="medium"),
+                t("reservation_name"): st.column_config.TextColumn(width="medium"),
                 t("pax"): st.column_config.NumberColumn(width="small"),
                 t("tariff"): st.column_config.NumberColumn(format="€%.2f", width="small"),
                 t("observations"): st.column_config.TextColumn(width="large"),
@@ -830,7 +909,7 @@ if view_key == "el_roll":
                     room_idx = room_options.index(room_number) if room_number in room_options else 0
 
                     room_number_new = st.selectbox(t("room"), room_options, index=room_idx)
-                    guest_name_new = st.text_input(t("guest_name"), value=guest_name)
+                    guest_name_new = st.text_input(t("reservation_name"), value=guest_name)
 
                     d1, d2 = st.columns(2)
                     with d1:
@@ -878,7 +957,7 @@ if view_key == "el_roll":
 
                     if save_btn:
                         if not guest_name_new.strip():
-                            st.error(t("guest_required"))
+                            st.error(t("name_required"))
                         elif check_out_new <= check_in_new:
                             st.error(t("date_range_error"))
                         else:
@@ -929,8 +1008,7 @@ elif view_key == "register_guests":
         room_options = [r[1] for r in rooms]
         room_number = st.selectbox(t("room"), room_options, index=0)
 
-        # ✅ labeled “Reservation Name”
-        reservation_name = st.text_input(t("guest_name"), value="")
+        reservation_name = st.text_input(t("reservation_name"), value="")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -954,7 +1032,7 @@ elif view_key == "register_guests":
         submit = st.form_submit_button(t("save"), type="primary")
         if submit:
             if not reservation_name.strip():
-                st.error(t("guest_required"))
+                st.error(t("name_required"))
             elif check_out <= check_in:
                 st.error(t("date_range_error"))
             else:
@@ -969,7 +1047,6 @@ elif view_key == "register_guests":
                     status=status,
                 )
                 if ok:
-                    # ✅ green popup (Streamlit toast auto dismiss)
                     st.session_state.register_toast = True
                     st.rerun()
                 else:
@@ -1091,7 +1168,7 @@ elif view_key == "search_guests":
                     mime="text/csv",
                 )
         else:
-            st.info(t("no_res_for_guest"))
+            st.info(t("no_res_for_name"))
 
 elif view_key == "settings":
     st.subheader(t("settings"))
@@ -1110,6 +1187,40 @@ elif view_key == "settings":
         set_setting("lang", lang_choice)
         st.success(t("lang_saved"))
         st.rerun()
+
+    st.divider()
+
+    # Backups (Admin)
+    if st.session_state.admin:
+        st.markdown("### Backups")
+
+        latest = get_latest_backup_path()
+        if latest:
+            st.caption(f"{t('last_backup')}: {os.path.basename(latest)}")
+        else:
+            st.info(t("no_backups"))
+
+        colb1, colb2 = st.columns(2)
+        with colb1:
+            if st.button(t("backup_now"), type="primary"):
+                path = create_backup(force=True)
+                if path:
+                    st.success(t("backup_created"))
+                    st.rerun()
+
+        with colb2:
+            latest = get_latest_backup_path()
+            if latest and os.path.exists(latest):
+                with open(latest, "rb") as f:
+                    st.download_button(
+                        label=t("download_latest_backup"),
+                        data=f.read(),
+                        file_name=os.path.basename(latest),
+                        mime="application/octet-stream",
+                        use_container_width=True,
+                    )
+            else:
+                st.button(t("download_latest_backup"), disabled=True, use_container_width=True)
 
     st.divider()
 
@@ -1139,6 +1250,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v3.0")
+    st.write("Isla Verde Hotel Manager v3.1")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
