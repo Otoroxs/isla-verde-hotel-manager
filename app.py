@@ -19,14 +19,6 @@ STATUSES = [
     ("checkedout", "Checked Out"),
 ]
 
-ROOM_TYPES = [
-    "Standard",
-    "Superior",
-    "Deluxe",
-    "Deluxe Superior",
-    "Deluxe Superior Balcony",
-]
-
 # ----------------- I18N (English/Spanish) -----------------
 TEXT = {
     "en": {
@@ -48,11 +40,9 @@ TEXT = {
         "admin_password": "Admin password",
         "unlock_admin": "Unlock admin",
         "type_admin_pass": "Type admin pass…",
-        "calendar": "Calendar",
         "today": "Today",
         "prev": "◀",
         "next": "▶",
-        "rooms": "Rooms",
         "guest_name": "Guest Name",
         "pax": "PAX",
         "tariff": "Tariff",
@@ -68,9 +58,7 @@ TEXT = {
         "deleted": "Deleted successfully!",
         "search_placeholder": "Type guest name...",
         "no_results": "No results found",
-        "all_rooms": "All Rooms",
         "select_date": "Select a date",
-        "add_reservation": "Add Reservation",
         "edit_reservation": "Edit Reservation",
         "checkin_date": "Check-in Date",
         "checkout_date": "Check-out Date",
@@ -92,15 +80,17 @@ TEXT = {
         "new_room": "New room number",
         "room_added": "Room added successfully",
         "room_exists": "Room already exists",
-        "delete_room": "Delete Room",
         "room_deleted": "Room deleted successfully",
         "export_csv": "Export to CSV",
         "download_csv": "Download CSV",
         "total_guests": "Total Guests",
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
-        "dashboard": "Dashboard",
         "history_for": "History for",
+        "edit_from_table": "Edit from table",
+        "pick_row_to_edit": "Select a row and click Save/Update below.",
+        "edit_row_hint": "Tick the Edit checkbox for the reservation you want to modify.",
+        "clear_selection": "Clear selection",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -121,11 +111,9 @@ TEXT = {
         "admin_password": "Contraseña admin",
         "unlock_admin": "Desbloquear admin",
         "type_admin_pass": "Escribe la contraseña admin…",
-        "calendar": "Calendario",
         "today": "Hoy",
         "prev": "◀",
         "next": "▶",
-        "rooms": "Habitaciones",
         "guest_name": "Nombre del Huésped",
         "pax": "PAX",
         "tariff": "Tarifa",
@@ -141,9 +129,7 @@ TEXT = {
         "deleted": "¡Borrado exitosamente!",
         "search_placeholder": "Escribe nombre del huésped...",
         "no_results": "No se encontraron resultados",
-        "all_rooms": "Todas las habitaciones",
         "select_date": "Selecciona una fecha",
-        "add_reservation": "Añadir Reserva",
         "edit_reservation": "Editar Reserva",
         "checkin_date": "Fecha de Entrada",
         "checkout_date": "Fecha de Salida",
@@ -165,15 +151,17 @@ TEXT = {
         "new_room": "Nuevo número de habitación",
         "room_added": "Habitación añadida exitosamente",
         "room_exists": "La habitación ya existe",
-        "delete_room": "Borrar Habitación",
         "room_deleted": "Habitación borrada exitosamente",
         "export_csv": "Exportar a CSV",
         "download_csv": "Descargar CSV",
         "total_guests": "Huéspedes Totales",
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
-        "dashboard": "Panel de Control",
         "history_for": "Historial de",
+        "edit_from_table": "Editar desde la tabla",
+        "pick_row_to_edit": "Selecciona una fila y guarda/actualiza abajo.",
+        "edit_row_hint": "Marca la casilla Editar para la reserva que deseas modificar.",
+        "clear_selection": "Borrar selección",
     },
 }
 
@@ -305,7 +293,6 @@ def init_db():
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         conn.commit()
 
-        # Add default rooms if none exist
         cur = conn.execute("SELECT COUNT(*) FROM rooms;")
         if cur.fetchone()[0] == 0:
             for n in range(101, 111):
@@ -321,6 +308,12 @@ def normalize_guest_name(name: str) -> str:
 def get_rooms():
     with db() as conn:
         return conn.execute("SELECT id, number FROM rooms ORDER BY number;").fetchall()
+
+
+def get_room_id_by_number(room_number: str) -> Optional[int]:
+    with db() as conn:
+        row = conn.execute("SELECT id FROM rooms WHERE number=?;", (room_number,)).fetchone()
+        return int(row[0]) if row else None
 
 
 def add_room(num: str):
@@ -431,7 +424,7 @@ def save_reservation(
         room_row = conn.execute("SELECT id FROM rooms WHERE number = ?;", (room_number,)).fetchone()
         if not room_row:
             return False
-        room_id = room_row[0]
+        room_id = int(room_row[0])
 
         # Overlap check
         if reservation_id:
@@ -485,6 +478,12 @@ def save_reservation(
         return True
 
 
+def delete_reservation(res_id: int):
+    with db() as conn:
+        conn.execute("DELETE FROM reservations WHERE id=?;", (res_id,))
+        conn.commit()
+
+
 def search_guests(query: str, limit: int = 10):
     if not query or len(query.strip()) < 2:
         return []
@@ -519,10 +518,9 @@ def get_guest_reservations(guest_name: str):
 
 
 def get_dashboard_stats(selected_date: date):
-    # Revenue intentionally removed from UI; stats still useful for occupancy/guest counts
+    # Revenue removed (not shown in El Roll)
     with db() as conn:
         total_rooms = conn.execute("SELECT COUNT(*) FROM rooms;").fetchone()[0]
-
         occupied_rooms = conn.execute(
             """
             SELECT COUNT(DISTINCT r.room_id)
@@ -532,7 +530,6 @@ def get_dashboard_stats(selected_date: date):
             """,
             (iso(selected_date), iso(selected_date)),
         ).fetchone()[0]
-
         total_guests = conn.execute(
             """
             SELECT COALESCE(SUM(r.num_guests), 0)
@@ -561,16 +558,18 @@ st.session_state.setdefault("authed", False)
 st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
-st.session_state.setdefault("editing_reservation", None)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("search_suggestions", [])
 st.session_state.setdefault("delete_candidate", None)
+
+# NEW: El Roll inline editor state
+st.session_state.setdefault("elroll_edit_id", None)
 
 # load settings from DB
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-# ✅ Simplified view is ALWAYS ON (main view). Switch removed from Settings.
+# ✅ Simplified view is ALWAYS ON (main view). Switch removed.
 st.session_state.simplified_mode = True
 
 # login
@@ -634,6 +633,7 @@ st.title(t("app_title"))
 
 # ----------------- VIEWS -----------------
 if view_key == "el_roll":
+    # Date controls
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
 
     with col1:
@@ -662,6 +662,7 @@ if view_key == "el_roll":
         )
         if new_date != st.session_state.selected_date:
             st.session_state.selected_date = new_date
+            st.session_state.elroll_edit_id = None
             st.rerun()
 
     # Dashboard stats (Revenue removed)
@@ -676,137 +677,234 @@ if view_key == "el_roll":
 
     st.divider()
 
+    # Build El Roll table
     rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
 
-    table_data = []
+    rows = []
     for room in rooms_status:
         status_text = dict(STATUSES).get(room["status"], room["status"])
         if room["status"] == "available":
             status_text = t("available")
 
-        table_data.append(
+        rows.append(
             {
                 t("room"): room["room_number"],
                 t("guest_name"): room["guest_name"],
-                t("pax"): room["num_guests"] if room["num_guests"] > 0 else "",
-                t("tariff"): f"€{room['tariff']:.2f}" if room["tariff"] > 0 else "",
+                t("pax"): int(room["num_guests"]) if room["num_guests"] else "",
+                t("tariff"): float(room["tariff"]) if room["tariff"] else 0.0,
                 t("observations"): room["notes"],
                 t("status"): status_text,
-                "reservation_id": room["reservation_id"],
-                "occupied": room["occupied"],
+                "_reservation_id": room["reservation_id"],  # internal
+                t("edit"): False,  # checkbox column
             }
         )
 
-    if table_data:
-        df = pd.DataFrame(table_data)
+    if rows:
+        df = pd.DataFrame(rows)
 
-        def color_status(val):
-            if val == t("available"):
-                return "background-color: #d4edda; color: #155724;"
-            elif "Checked In" in str(val) or "Check-in" in str(val):
-                return "background-color: #cce5ff; color: #004085;"
-            elif "Reserved" in str(val) or "Reservado" in str(val):
-                return "background-color: #fff3cd; color: #856404;"
-            elif "No Show" in str(val):
-                return "background-color: #f8d7da; color: #721c24;"
-            else:
-                return ""
+        # Style helper (works with dataframe view, not data_editor styling)
+        # We'll keep colors by using plain dataframe with status colors using Styler,
+        # but we also need editing selection -> use data_editor.
+        st.caption(t("edit_row_hint"))
 
-        styled_df = df.style.applymap(color_status, subset=[t("status")])
-
-        st.dataframe(
-            styled_df,
+        # Use data_editor so user can tick "Edit" checkbox for a row
+        edited_df = st.data_editor(
+            df,
             use_container_width=True,
             hide_index=True,
+            disabled=[
+                t("room"),
+                t("guest_name"),
+                t("pax"),
+                t("tariff"),
+                t("observations"),
+                t("status"),
+                "_reservation_id",
+            ],
             column_config={
                 t("room"): st.column_config.TextColumn(width="small"),
                 t("guest_name"): st.column_config.TextColumn(width="medium"),
                 t("pax"): st.column_config.NumberColumn(width="small"),
-                t("tariff"): st.column_config.TextColumn(width="small"),
+                t("tariff"): st.column_config.NumberColumn(format="€%.2f", width="small"),
                 t("observations"): st.column_config.TextColumn(width="large"),
                 t("status"): st.column_config.TextColumn(width="medium"),
+                t("edit"): st.column_config.CheckboxColumn(width="small"),
+                "_reservation_id": st.column_config.TextColumn(width="small", disabled=True),
             },
+            key="elroll_editor",
         )
 
-        # ✅ Simplified mode is now main view: edit/delete list hidden.
+        # Determine selected reservation to edit (first row with Edit=True and has reservation_id)
+        selected_ids = edited_df.loc[
+            (edited_df[t("edit")] == True) & (edited_df["_reservation_id"].notna()),
+            "_reservation_id",
+        ].tolist()
 
-        if st.button(t("export_csv")):
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label=t("download_csv"),
-                data=csv,
-                file_name=f"el_roll_{st.session_state.selected_date}.csv",
-                mime="text/csv",
-            )
+        if selected_ids:
+            st.session_state.elroll_edit_id = int(selected_ids[0])
+        # If none selected, keep current selection (so user can scroll without losing), unless they clear
+        clear_col, export_col = st.columns([1, 1])
+        with clear_col:
+            if st.button(t("clear_selection")):
+                st.session_state.elroll_edit_id = None
+                # reset editor state
+                st.session_state["elroll_editor"] = df
+                st.rerun()
+
+        with export_col:
+            if st.button(t("export_csv")):
+                export_df = df.drop(columns=["_reservation_id", t("edit")], errors="ignore")
+                csv = export_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=t("download_csv"),
+                    data=csv,
+                    file_name=f"el_roll_{st.session_state.selected_date}.csv",
+                    mime="text/csv",
+                )
+
+        # Inline editor panel
+        if st.session_state.elroll_edit_id:
+            reservation_data = get_reservation(st.session_state.elroll_edit_id)
+            if reservation_data:
+                res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff = reservation_data
+                check_in = parse_iso(check_in_s)
+                check_out = parse_iso(check_out_s)
+
+                st.divider()
+                st.subheader(f"{t('edit_reservation')}: {room_number} - {guest_name}")
+
+                with st.form("elroll_inline_edit_form"):
+                    rooms = get_rooms()
+                    room_options = [r[1] for r in rooms]
+                    default_room_index = room_options.index(room_number) if room_number in room_options else 0
+
+                    room_number_new = st.selectbox(t("room"), room_options, index=default_room_index)
+                    guest_name_new = st.text_input(t("guest_name"), value=guest_name)
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        check_in_new = st.date_input(t("checkin_date"), value=check_in)
+                    with c2:
+                        check_out_new = st.date_input(t("checkout_date"), value=check_out)
+
+                    st.caption(f"{t('num_nights')}: {nights(check_in_new, check_out_new)}")
+
+                    c3, c4 = st.columns(2)
+                    with c3:
+                        num_guests_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
+                    with c4:
+                        tariff_new = st.number_input(
+                            t("tariff"),
+                            min_value=0.0,
+                            value=float(tariff),
+                            step=10.0,
+                            format="%.2f",
+                        )
+
+                    status_options = [s[0] for s in STATUSES]
+                    default_status_index = status_options.index(status) if status in status_options else 0
+                    status_new = st.selectbox(
+                        t("status"),
+                        status_options,
+                        index=default_status_index,
+                        format_func=lambda x: dict(STATUSES)[x],
+                    )
+
+                    notes_new = st.text_area(t("observations"), value=notes or "", height=100)
+
+                    b1, b2, b3 = st.columns([1, 1, 2])
+                    with b1:
+                        save_btn = st.form_submit_button(t("update"), type="primary")
+                    with b2:
+                        cancel_btn = st.form_submit_button(t("cancel"))
+                    # Optional delete (kept simple)
+                    with b3:
+                        delete_btn = st.form_submit_button(f"🗑️ {t('delete')}")
+
+                    if cancel_btn:
+                        st.session_state.elroll_edit_id = None
+                        st.rerun()
+
+                    if save_btn:
+                        if not guest_name_new.strip():
+                            st.error(t("guest_required"))
+                        elif check_out_new <= check_in_new:
+                            st.error(t("date_range_error"))
+                        else:
+                            success = save_reservation(
+                                room_number=room_number_new,
+                                guest_name=guest_name_new,
+                                check_in=check_in_new,
+                                check_out=check_out_new,
+                                num_guests=int(num_guests_new),
+                                tariff=float(tariff_new),
+                                notes=notes_new,
+                                status=status_new,
+                                reservation_id=int(res_id),
+                            )
+                            if success:
+                                st.success(t("saved"))
+                                st.session_state.elroll_edit_id = None
+                                st.rerun()
+                            else:
+                                st.error(t("room_occupied"))
+
+                    if delete_btn:
+                        # Simple confirm in-session
+                        st.session_state.delete_candidate = int(res_id)
+                        st.rerun()
+
+                # Delete confirm block (outside form so it survives reruns)
+                if st.session_state.delete_candidate == int(res_id):
+                    st.warning(t("delete_warning"))
+                    d1, d2 = st.columns(2)
+                    with d1:
+                        if st.button(t("confirm_delete"), type="primary"):
+                            delete_reservation(int(res_id))
+                            st.session_state.delete_candidate = None
+                            st.session_state.elroll_edit_id = None
+                            st.success(t("deleted"))
+                            st.rerun()
+                    with d2:
+                        if st.button(t("cancel")):
+                            st.session_state.delete_candidate = None
+                            st.rerun()
+            else:
+                st.info(t("no_results"))
     else:
         st.info(t("no_results"))
 
 elif view_key == "register_guests":
     st.subheader(t("register_guests"))
 
-    editing_res_id = st.session_state.editing_reservation
-    reservation_data = get_reservation(editing_res_id) if editing_res_id else None
-
-    if reservation_data:
-        st.info(f"{t('edit_reservation')}: {reservation_data[1]} - {reservation_data[2]}")
-
+    # This view remains for adding new reservations manually
     with st.form("reservation_form"):
         rooms = get_rooms()
         room_options = [r[1] for r in rooms]
+        room_number = st.selectbox(t("room"), room_options, index=0)
 
-        default_room_index = (
-            room_options.index(reservation_data[1])
-            if reservation_data and reservation_data[1] in room_options
-            else 0
-        )
-        room_number = st.selectbox(t("room"), room_options, index=default_room_index)
-
-        default_name = reservation_data[2] if reservation_data else ""
-        guest_name = st.text_input(t("guest_name"), value=default_name)
+        guest_name = st.text_input(t("guest_name"), value="")
 
         col1, col2 = st.columns(2)
         with col1:
-            default_checkin = parse_iso(reservation_data[4]) if reservation_data else st.session_state.selected_date
-            check_in = st.date_input(t("checkin_date"), value=default_checkin)
+            check_in = st.date_input(t("checkin_date"), value=st.session_state.selected_date)
         with col2:
-            default_checkout = parse_iso(reservation_data[5]) if reservation_data else st.session_state.selected_date + timedelta(days=1)
-            check_out = st.date_input(t("checkout_date"), value=default_checkout)
+            check_out = st.date_input(t("checkout_date"), value=st.session_state.selected_date + timedelta(days=1))
 
         st.caption(f"{t('num_nights')}: {nights(check_in, check_out)}")
 
         col3, col4 = st.columns(2)
         with col3:
-            default_pax = reservation_data[7] if reservation_data else 1
-            num_guests = st.number_input(t("pax"), min_value=1, max_value=20, value=int(default_pax))
+            num_guests = st.number_input(t("pax"), min_value=1, max_value=20, value=1)
         with col4:
-            default_tariff = float(reservation_data[8]) if reservation_data else 0.0
-            tariff = st.number_input(t("tariff"), min_value=0.0, value=float(default_tariff), step=10.0, format="%.2f")
+            tariff = st.number_input(t("tariff"), min_value=0.0, value=0.0, step=10.0, format="%.2f")
 
         status_options = [s[0] for s in STATUSES]
-        default_status_index = (
-            status_options.index(reservation_data[3])
-            if reservation_data and reservation_data[3] in status_options
-            else 0
-        )
-        status = st.selectbox(
-            t("status"),
-            status_options,
-            index=default_status_index,
-            format_func=lambda x: dict(STATUSES)[x],
-        )
+        status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: dict(STATUSES)[x])
 
-        default_notes = reservation_data[6] if reservation_data else ""
-        notes = st.text_area(t("observations"), value=default_notes, height=100)
+        notes = st.text_area(t("observations"), value="", height=100)
 
-        col5, col6 = st.columns(2)
-        with col5:
-            submit_button = st.form_submit_button(t("update") if editing_res_id else t("save"), type="primary")
-        with col6:
-            cancel_button = st.form_submit_button(t("cancel"))
-
-        if cancel_button:
-            st.session_state.editing_reservation = None
-            st.rerun()
+        submit_button = st.form_submit_button(t("save"), type="primary")
 
         if submit_button:
             if not guest_name.strip():
@@ -814,7 +912,7 @@ elif view_key == "register_guests":
             elif check_out <= check_in:
                 st.error(t("date_range_error"))
             else:
-                success = save_reservation(
+                ok = save_reservation(
                     room_number=room_number,
                     guest_name=guest_name,
                     check_in=check_in,
@@ -823,11 +921,10 @@ elif view_key == "register_guests":
                     tariff=float(tariff),
                     notes=notes,
                     status=status,
-                    reservation_id=editing_res_id if editing_res_id else None,
+                    reservation_id=None,
                 )
-                if success:
+                if ok:
                     st.success(t("saved"))
-                    st.session_state.editing_reservation = None
                     st.rerun()
                 else:
                     st.error(t("room_occupied"))
@@ -904,9 +1001,9 @@ elif view_key == "search_guests":
                 _, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, updated_at = res
                 check_in = parse_iso(check_in_str)
                 check_out = parse_iso(check_out_str)
-                num_n = nights(check_in, check_out)
-                total_nights += num_n
-                stay_revenue = float(tariff) * num_n
+                nn = nights(check_in, check_out)
+                total_nights += nn
+                stay_revenue = float(tariff) * nn
                 total_revenue += stay_revenue
 
                 table_data.append(
@@ -914,7 +1011,7 @@ elif view_key == "search_guests":
                         t("room"): room_number,
                         t("checkin_date"): check_in,
                         t("checkout_date"): check_out,
-                        t("num_nights"): num_n,
+                        t("num_nights"): nn,
                         t("pax"): int(num_guests),
                         t("tariff"): float(tariff),
                         "total": stay_revenue,
@@ -1010,6 +1107,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.2")
+    st.write("Isla Verde Hotel Manager v2.3")
     st.write("Simplified El Roll System (always on)")
-    st.caption("© 2024 Hotel Isla Verde")
+    st.caption("© 2024 Hotel Isla Verd
