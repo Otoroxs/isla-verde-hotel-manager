@@ -58,10 +58,9 @@ TEXT = {
         "edit": "Edit",
         "saved": "Saved successfully!",
         "deleted": "Deleted successfully!",
-        "search_placeholder": "Type guest name...",
+        "search_placeholder": "Search guests…",
         "no_results": "No results found",
         "select_date": "Select a date",
-        "edit_reservation": "Edit Reservation",
         "checkin_date": "Check-in Date",
         "checkout_date": "Check-out Date",
         "num_nights": "Number of Nights",
@@ -90,16 +89,18 @@ TEXT = {
         "occupancy_rate": "Occupancy Rate",
         "history_for": "History for",
         "select_to_edit": "Select",
-        "select_row_hint": "Tick a row in the Select column, then click “Edit Selected”.",
-        "edit_selected": "Edit Selected",
+        "select_row_hint": "Tick a row in the Select column, then edit below.",
         "clear_selection": "Clear selection",
         "edit_from_elroll": "Edit from El Roll",
-        "rooms_reset": "Rooms reset to defaults!",
-        "reset_rooms": "Reset to Default Rooms",
-        "reset_rooms_confirm": "Reset all rooms to configured defaults?",
         "db_mgmt": "Database Management",
         "clear_all_res": "Clear All Reservations",
         "clear_all_confirm": "Are you sure? This cannot be undone.",
+        "reset_rooms": "Reset to Default Rooms",
+        "reset_rooms_confirm": "Reset all rooms to configured defaults?",
+        "rooms_reset": "Rooms reset to defaults!",
+        "suggestions": "Suggestions",
+        "open_guest": "Open guest",
+        "search_tip": "Start typing to see suggestions, like Google.",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -136,10 +137,9 @@ TEXT = {
         "edit": "Editar",
         "saved": "¡Guardado exitosamente!",
         "deleted": "¡Borrado exitosamente!",
-        "search_placeholder": "Escribe nombre del huésped...",
+        "search_placeholder": "Buscar huéspedes…",
         "no_results": "No se encontraron resultados",
         "select_date": "Selecciona una fecha",
-        "edit_reservation": "Editar Reserva",
         "checkin_date": "Fecha de Entrada",
         "checkout_date": "Fecha de Salida",
         "num_nights": "Número de Noches",
@@ -168,16 +168,18 @@ TEXT = {
         "occupancy_rate": "Tasa de Ocupación",
         "history_for": "Historial de",
         "select_to_edit": "Seleccionar",
-        "select_row_hint": "Marca una fila en la columna Seleccionar y luego pulsa “Editar Seleccionado”.",
-        "edit_selected": "Editar Seleccionado",
+        "select_row_hint": "Marca una fila en la columna Seleccionar y edita abajo.",
         "clear_selection": "Borrar selección",
         "edit_from_elroll": "Editar desde El Roll",
-        "rooms_reset": "¡Habitaciones restauradas!",
-        "reset_rooms": "Restablecer habitaciones",
-        "reset_rooms_confirm": "¿Restablecer todas las habitaciones a los valores por defecto?",
         "db_mgmt": "Gestión de Base de Datos",
         "clear_all_res": "Borrar Todas las Reservas",
         "clear_all_confirm": "¿Seguro? Esto no se puede deshacer.",
+        "reset_rooms": "Restablecer habitaciones",
+        "reset_rooms_confirm": "¿Restablecer todas las habitaciones a los valores por defecto?",
+        "rooms_reset": "¡Habitaciones restauradas!",
+        "suggestions": "Sugerencias",
+        "open_guest": "Abrir huésped",
+        "search_tip": "Empieza a escribir para ver sugerencias, como Google.",
     },
 }
 
@@ -584,8 +586,94 @@ def status_display(db_status: str) -> str:
     return STATUS_LABEL.get(db_status, db_status)
 
 
-# ----------------- APP START -----------------
+# ----------------- UI STYLES -----------------
 st.set_page_config("Isla Verde Hotel Manager", layout="wide")
+
+st.markdown(
+    """
+<style>
+/* --- Google-like search bar styling --- */
+.iv-search-wrap{
+  max-width: 980px;
+  margin: 0 auto;
+}
+.iv-search-title{
+  font-size: 0.95rem;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+.iv-search-card{
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: rgba(255,255,255,0.03);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+}
+.iv-search-card:focus-within{
+  border-color: rgba(99,102,241,0.45);
+  box-shadow: 0 12px 34px rgba(99,102,241,0.12);
+}
+.iv-search-row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.iv-search-icon{
+  width:18px;
+  height:18px;
+  opacity:0.9;
+}
+div[data-testid="stTextInput"] > label {display:none;}
+.iv-search-card div[data-testid="stTextInput"] input{
+  border: none !important;
+  background: transparent !important;
+  padding: 6px 4px !important;
+  font-size: 1.05rem !important;
+  outline: none !important;
+}
+.iv-search-card div[data-testid="stTextInput"] input:focus{
+  box-shadow:none !important;
+}
+.iv-suggestions{
+  max-width: 980px;
+  margin: 0 auto;
+  margin-top: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.02);
+}
+.iv-suggestions .iv-sugg-header{
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  opacity: 0.8;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.iv-suggestions .iv-sugg-item{
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.iv-suggestions .iv-sugg-item:last-child{border-bottom:none;}
+.iv-suggestions .iv-sugg-item:hover{
+  background: rgba(99,102,241,0.08);
+}
+.iv-pill{
+  display:inline-block;
+  font-size:0.75rem;
+  padding:2px 10px;
+  border-radius:999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  margin-left: 8px;
+  opacity:0.9;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ----------------- APP INIT -----------------
 init_db()
 
 # session defaults
@@ -593,11 +681,16 @@ st.session_state.setdefault("authed", False)
 st.session_state.setdefault("admin", False)
 st.session_state.setdefault("admin_pw_key", 0)
 st.session_state.setdefault("selected_date", date.today())
+
+# Search Guests state
 st.session_state.setdefault("search_query", "")
-st.session_state.setdefault("search_suggestions", [])
+st.session_state.setdefault("search_active_name", None)
+st.session_state.setdefault("search_last_input", "")
+
+# Delete confirmation
 st.session_state.setdefault("delete_candidate", None)
 
-# El Roll selection + widget-key counter (FIX for StreamlitAPIException)
+# El Roll selection + safe-reset counter
 st.session_state.setdefault("elroll_selected_res_id", None)
 st.session_state.setdefault("elroll_editor_key_n", 0)
 
@@ -660,8 +753,6 @@ else:
         st.session_state.admin_pw_key += 1
         st.rerun()
 
-
-# logout
 st.sidebar.divider()
 if st.sidebar.button(t("logout")):
     st.session_state.authed = False
@@ -745,9 +836,6 @@ if view_key == "el_roll":
 
         st.caption(t("select_row_hint"))
 
-        # IMPORTANT FIX:
-        # We NEVER assign to st.session_state[widget_key] after the widget exists.
-        # To "reset" the editor we bump elroll_editor_key_n which changes the widget key.
         editor_key = f"elroll_editor_{st.session_state.elroll_editor_key_n}"
 
         edited_df = st.data_editor(
@@ -776,30 +864,20 @@ if view_key == "el_roll":
             key=editor_key,
         )
 
-        # Determine the selected reservation (first checked row that has an id)
         selected_ids = edited_df.loc[
             (edited_df[t("select_to_edit")] == True) & (edited_df["_reservation_id"].notna()),
             "_reservation_id",
         ].tolist()
 
-        if selected_ids:
-            st.session_state.elroll_selected_res_id = int(selected_ids[0])
-        else:
-            st.session_state.elroll_selected_res_id = None
+        st.session_state.elroll_selected_res_id = int(selected_ids[0]) if selected_ids else None
 
-        btn1, btn2, btn3 = st.columns([1, 1, 2])
-        with btn1:
-            if st.button(t("edit_selected"), use_container_width=True, disabled=st.session_state.elroll_selected_res_id is None):
-                # Just open the editor section below (selection is already stored)
-                st.rerun()
-
-        with btn2:
+        b1, b2 = st.columns([1, 2])
+        with b1:
             if st.button(t("clear_selection"), use_container_width=True):
                 st.session_state.elroll_selected_res_id = None
-                st.session_state.elroll_editor_key_n += 1  # reset editor safely
+                st.session_state.elroll_editor_key_n += 1
                 st.rerun()
-
-        with btn3:
+        with b2:
             if st.button(t("export_csv"), use_container_width=True):
                 export_df = df.drop(columns=[t("select_to_edit"), "_reservation_id"], errors="ignore")
                 csv = export_df.to_csv(index=False).encode("utf-8")
@@ -858,12 +936,12 @@ if view_key == "el_roll":
 
                     notes_new = st.text_area(t("observations"), value=notes or "", height=100)
 
-                    b1, b2, b3 = st.columns([1, 1, 2])
-                    with b1:
+                    x1, x2, x3 = st.columns([1, 1, 2])
+                    with x1:
                         save_btn = st.form_submit_button(t("update"), type="primary")
-                    with b2:
+                    with x2:
                         cancel_btn = st.form_submit_button(t("cancel"))
-                    with b3:
+                    with x3:
                         delete_btn = st.form_submit_button(f"🗑️ {t('delete')}")
 
                     if cancel_btn:
@@ -900,11 +978,11 @@ if view_key == "el_roll":
                         st.session_state.delete_candidate = int(res_id)
                         st.rerun()
 
-                # Delete confirmation (outside the form)
+                # Delete confirmation
                 if st.session_state.delete_candidate == int(res_id):
                     st.warning(t("delete_warning"))
-                    x1, x2 = st.columns(2)
-                    with x1:
+                    y1, y2 = st.columns(2)
+                    with y1:
                         if st.button(t("confirm_delete"), type="primary"):
                             delete_reservation(int(res_id))
                             st.session_state.delete_candidate = None
@@ -912,12 +990,10 @@ if view_key == "el_roll":
                             st.session_state.elroll_editor_key_n += 1
                             st.success(t("deleted"))
                             st.rerun()
-                    with x2:
+                    with y2:
                         if st.button(t("cancel")):
                             st.session_state.delete_candidate = None
                             st.rerun()
-            else:
-                st.info(t("no_results"))
 
 elif view_key == "register_guests":
     st.subheader(t("register_guests"))
@@ -1003,33 +1079,70 @@ elif view_key == "register_guests":
 
 elif view_key == "search_guests":
     st.subheader(t("search_guests"))
+    st.caption(t("search_tip"))
 
-    with st.container():
-        search_col1, search_col2 = st.columns([4, 1])
-        with search_col1:
-            search_input = st.text_input(
-                "",
-                value=st.session_state.search_query,
-                placeholder=t("search_placeholder"),
-                key="search_input_main",
-            )
-        with search_col2:
-            if st.button("🔍", use_container_width=True):
-                st.session_state.search_query = search_input
-                st.rerun()
+    # --- Google-like search UI ---
+    st.markdown('<div class="iv-search-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="iv-search-card"><div class="iv-search-row">', unsafe_allow_html=True)
+    st.markdown(
+        """
+<svg class="iv-search-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M21 21L16.65 16.65M19 11C19 15.4183 15.4183 19 11 19C6.58172 19 3 15.4183 3 11C3 6.58172 6.58172 3 11 3C15.4183 3 19 6.58172 19 11Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+""",
+        unsafe_allow_html=True,
+    )
 
-    if search_input and len(search_input) >= 2:
-        suggestions = search_guests(search_input, limit=10)
-        st.session_state.search_suggestions = suggestions
-        if suggestions:
-            st.write("**Suggestions:**")
-            for suggestion in suggestions:
-                if st.button(suggestion, key=f"sugg_{suggestion}"):
-                    st.session_state.search_query = suggestion
+    # Input (inside the "pill" card)
+    search_input = st.text_input(
+        "",
+        value=st.session_state.search_last_input,
+        placeholder=t("search_placeholder"),
+        key="search_box_google",
+    )
+    st.markdown("</div></div></div>", unsafe_allow_html=True)
+
+    # Update stored input
+    st.session_state.search_last_input = search_input
+
+    # Suggestions (like Google dropdown)
+    suggestions: List[str] = []
+    if search_input and len(search_input.strip()) >= 2:
+        suggestions = search_guests(search_input.strip(), limit=10)
+
+    # Clickable suggestion list
+    if suggestions:
+        st.markdown('<div class="iv-suggestions">', unsafe_allow_html=True)
+        st.markdown(f'<div class="iv-sugg-header">{t("suggestions")}</div>', unsafe_allow_html=True)
+
+        for s in suggestions:
+            # Each suggestion as a full-width button but visually like a row
+            cols = st.columns([1, 6, 2])
+            with cols[0]:
+                st.write("🔎")
+            with cols[1]:
+                if st.button(s, key=f"sugg_btn_{s}", use_container_width=True):
+                    st.session_state.search_active_name = s
+                    st.session_state.search_query = s
                     st.rerun()
+            with cols[2]:
+                st.write("")  # spacing
 
-    if st.session_state.search_query and len(st.session_state.search_query.strip()) >= 2:
-        guest_name = st.session_state.search_query.strip()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # If user hits enter / types exact name, allow "open guest"
+    open_cols = st.columns([2, 8])
+    with open_cols[0]:
+        open_btn = st.button(t("open_guest"), use_container_width=True, disabled=not (search_input and len(search_input.strip()) >= 2))
+    if open_btn:
+        st.session_state.search_query = search_input.strip()
+        st.session_state.search_active_name = search_input.strip()
+        st.rerun()
+
+    # Results
+    active_name = st.session_state.search_active_name or st.session_state.search_query
+    if active_name and len(active_name.strip()) >= 2:
+        guest_name = active_name.strip()
         reservations = get_guest_reservations(guest_name)
 
         if reservations:
@@ -1083,12 +1196,12 @@ elif view_key == "search_guests":
                 },
             )
 
-            c1, c2, c3 = st.columns(3)
-            with c1:
+            m1, m2, m3 = st.columns(3)
+            with m1:
                 st.metric("Total Stays", len(reservations))
-            with c2:
+            with m2:
                 st.metric("Total Nights", total_nights)
-            with c3:
+            with m3:
                 st.metric("Total Revenue", f"€{total_revenue:.2f}")
 
             if st.button(t("export_csv")):
@@ -1126,6 +1239,7 @@ elif view_key == "settings":
         st.markdown(f"### {t('db_mgmt')}")
 
         col1, col2 = st.columns(2)
+
         with col1:
             if st.button(t("clear_all_res"), type="secondary"):
                 if st.checkbox(t("clear_all_confirm")):
@@ -1148,6 +1262,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.6")
+    st.write("Isla Verde Hotel Manager v2.7")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
