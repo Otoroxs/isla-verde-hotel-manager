@@ -99,7 +99,6 @@ TEXT = {
         "total_guests": "Total Guests",
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
-        "revenue": "Revenue",
         "dashboard": "Dashboard",
         "history_for": "History for",
     },
@@ -173,7 +172,6 @@ TEXT = {
         "total_guests": "Huéspedes Totales",
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
-        "revenue": "Ingresos",
         "dashboard": "Panel de Control",
         "history_for": "Historial de",
     },
@@ -325,12 +323,6 @@ def get_rooms():
         return conn.execute("SELECT id, number FROM rooms ORDER BY number;").fetchall()
 
 
-def get_room_number(room_id: int) -> str:
-    with db() as conn:
-        row = conn.execute("SELECT number FROM rooms WHERE id=?;", (room_id,)).fetchone()
-        return row[0] if row else "—"
-
-
 def add_room(num: str):
     with db() as conn:
         conn.execute("INSERT INTO rooms(number) VALUES (?);", (num.strip(),))
@@ -345,7 +337,7 @@ def delete_room(rid: int):
 
 def get_reservations_for_date(selected_date: date):
     with db() as conn:
-        reservations = conn.execute(
+        return conn.execute(
             """
             SELECT r.id, rm.number, r.guest_name, r.num_guests, r.tariff, r.notes, r.status,
                    r.check_in, r.check_out
@@ -356,7 +348,6 @@ def get_reservations_for_date(selected_date: date):
             """,
             (iso(selected_date), iso(selected_date)),
         ).fetchall()
-        return reservations
 
 
 def get_all_rooms_with_status(selected_date: date):
@@ -378,7 +369,7 @@ def get_all_rooms_with_status(selected_date: date):
         }
 
     room_status = []
-    for room_id, room_number in rooms:
+    for _, room_number in rooms:
         if room_number in reservation_map:
             res = reservation_map[room_number]
             room_status.append(
@@ -411,7 +402,7 @@ def get_all_rooms_with_status(selected_date: date):
 
 def get_reservation(res_id: int):
     with db() as conn:
-        reservation = conn.execute(
+        return conn.execute(
             """
             SELECT r.id, rm.number, r.guest_name, r.status, r.check_in, r.check_out,
                    r.notes, r.num_guests, r.tariff
@@ -421,7 +412,6 @@ def get_reservation(res_id: int):
             """,
             (res_id,),
         ).fetchone()
-        return reservation
 
 
 def save_reservation(
@@ -443,8 +433,7 @@ def save_reservation(
             return False
         room_id = room_row[0]
 
-        # Overlap check: existing.check_in < new.check_out AND new.check_in < existing.check_out
-        # NOTE: stored as ISO date strings, so lexicographic compare works
+        # Overlap check
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -496,12 +485,6 @@ def save_reservation(
         return True
 
 
-def delete_reservation(res_id: int):
-    with db() as conn:
-        conn.execute("DELETE FROM reservations WHERE id=?;", (res_id,))
-        conn.commit()
-
-
 def search_guests(query: str, limit: int = 10):
     if not query or len(query.strip()) < 2:
         return []
@@ -522,7 +505,7 @@ def search_guests(query: str, limit: int = 10):
 
 def get_guest_reservations(guest_name: str):
     with db() as conn:
-        reservations = conn.execute(
+        return conn.execute(
             """
             SELECT r.id, rm.number, r.status, r.check_in, r.check_out,
                    r.notes, r.num_guests, r.tariff, r.updated_at
@@ -533,10 +516,10 @@ def get_guest_reservations(guest_name: str):
             """,
             (guest_name,),
         ).fetchall()
-        return reservations
 
 
 def get_dashboard_stats(selected_date: date):
+    # Revenue intentionally removed from UI; stats still useful for occupancy/guest counts
     with db() as conn:
         total_rooms = conn.execute("SELECT COUNT(*) FROM rooms;").fetchone()[0]
 
@@ -560,23 +543,11 @@ def get_dashboard_stats(selected_date: date):
             (iso(selected_date), iso(selected_date)),
         ).fetchone()[0]
 
-        # Daily revenue (tariff for rooms occupied on that date)
-        revenue = conn.execute(
-            """
-            SELECT COALESCE(SUM(r.tariff), 0)
-            FROM reservations r
-            WHERE r.check_in <= ? AND ? < r.check_out
-              AND r.status NOT IN ('noshow', 'checkedout');
-            """,
-            (iso(selected_date), iso(selected_date)),
-        ).fetchone()[0]
-
     occupancy_rate = (occupied_rooms / total_rooms * 100) if total_rooms > 0 else 0
     return {
         "total_rooms": total_rooms,
         "occupied_rooms": occupied_rooms,
         "total_guests": total_guests,
-        "revenue": revenue,
         "occupancy_rate": occupancy_rate,
     }
 
@@ -599,7 +570,7 @@ st.session_state.setdefault("delete_candidate", None)
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-# ✅ Simplified view is now ALWAYS ON (main view), no switch in Settings
+# ✅ Simplified view is ALWAYS ON (main view). Switch removed from Settings.
 st.session_state.simplified_mode = True
 
 # login
@@ -693,17 +664,15 @@ if view_key == "el_roll":
             st.session_state.selected_date = new_date
             st.rerun()
 
-    # Dashboard stats
+    # Dashboard stats (Revenue removed)
     stats = get_dashboard_stats(st.session_state.selected_date)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.metric(t("total_rooms"), stats["total_rooms"])
     with c2:
         st.metric(t("total_guests"), stats["total_guests"])
     with c3:
         st.metric(t("occupancy_rate"), f"{stats['occupancy_rate']:.1f}%")
-    with c4:
-        st.metric(t("revenue"), f"€{stats['revenue']:.2f}")
 
     st.divider()
 
@@ -759,10 +728,8 @@ if view_key == "el_roll":
             },
         )
 
-        # ✅ Simplified mode is now the main view: edit/delete list is ALWAYS hidden.
-        # (If you ever want it back for admin only, tell me and I’ll wire it to st.session_state.admin.)
+        # ✅ Simplified mode is now main view: edit/delete list hidden.
 
-        # Export button
         if st.button(t("export_csv")):
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
@@ -805,8 +772,7 @@ elif view_key == "register_guests":
             default_checkout = parse_iso(reservation_data[5]) if reservation_data else st.session_state.selected_date + timedelta(days=1)
             check_out = st.date_input(t("checkout_date"), value=default_checkout)
 
-        num_n = nights(check_in, check_out)
-        st.caption(f"{t('num_nights')}: {num_n}")
+        st.caption(f"{t('num_nights')}: {nights(check_in, check_out)}")
 
         col3, col4 = st.columns(2)
         with col3:
@@ -822,7 +788,12 @@ elif view_key == "register_guests":
             if reservation_data and reservation_data[3] in status_options
             else 0
         )
-        status = st.selectbox(t("status"), status_options, index=default_status_index, format_func=lambda x: dict(STATUSES)[x])
+        status = st.selectbox(
+            t("status"),
+            status_options,
+            index=default_status_index,
+            format_func=lambda x: dict(STATUSES)[x],
+        )
 
         default_notes = reservation_data[6] if reservation_data else ""
         notes = st.text_area(t("observations"), value=default_notes, height=100)
@@ -930,7 +901,7 @@ elif view_key == "search_guests":
             total_nights = 0
 
             for res in reservations:
-                res_id, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, updated_at = res
+                _, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, updated_at = res
                 check_in = parse_iso(check_in_str)
                 check_out = parse_iso(check_out_str)
                 num_n = nights(check_in, check_out)
@@ -996,8 +967,6 @@ elif view_key == "settings":
     st.subheader(t("settings"))
 
     # ✅ Simplified mode switch removed entirely.
-    # Language stays as a setting.
-
     st.markdown(f"### {t('language')}")
     lang_choice = st.selectbox(
         t("choose_language"),
@@ -1041,6 +1010,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.1")
+    st.write("Isla Verde Hotel Manager v2.2")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
