@@ -20,6 +20,7 @@ STATUSES = [
 ]
 STATUS_LABEL = {k: v for k, v in STATUSES}
 
+
 # ----------------- I18N (English/Spanish) -----------------
 TEXT = {
     "en": {
@@ -88,9 +89,17 @@ TEXT = {
         "total_rooms": "Total Rooms",
         "occupancy_rate": "Occupancy Rate",
         "history_for": "History for",
-        "edit_row_hint": "Tick the Edit checkbox for the reservation you want to modify.",
+        "select_to_edit": "Select",
+        "select_row_hint": "Tick a row in the Select column, then click “Edit Selected”.",
+        "edit_selected": "Edit Selected",
         "clear_selection": "Clear selection",
         "edit_from_elroll": "Edit from El Roll",
+        "rooms_reset": "Rooms reset to defaults!",
+        "reset_rooms": "Reset to Default Rooms",
+        "reset_rooms_confirm": "Reset all rooms to configured defaults?",
+        "db_mgmt": "Database Management",
+        "clear_all_res": "Clear All Reservations",
+        "clear_all_confirm": "Are you sure? This cannot be undone.",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -158,9 +167,17 @@ TEXT = {
         "total_rooms": "Habitaciones Totales",
         "occupancy_rate": "Tasa de Ocupación",
         "history_for": "Historial de",
-        "edit_row_hint": "Marca la casilla Editar para la reserva que deseas modificar.",
+        "select_to_edit": "Seleccionar",
+        "select_row_hint": "Marca una fila en la columna Seleccionar y luego pulsa “Editar Seleccionado”.",
+        "edit_selected": "Editar Seleccionado",
         "clear_selection": "Borrar selección",
         "edit_from_elroll": "Editar desde El Roll",
+        "rooms_reset": "¡Habitaciones restauradas!",
+        "reset_rooms": "Restablecer habitaciones",
+        "reset_rooms_confirm": "¿Restablecer todas las habitaciones a los valores por defecto?",
+        "db_mgmt": "Gestión de Base de Datos",
+        "clear_all_res": "Borrar Todas las Reservas",
+        "clear_all_confirm": "¿Seguro? Esto no se puede deshacer.",
     },
 }
 
@@ -173,11 +190,11 @@ def t(key: str) -> str:
 # ----------------- DEFAULT ROOMS -----------------
 def default_room_numbers() -> List[str]:
     nums: List[int] = []
-    nums += list(range(101, 108))   # 101-107
-    nums += list(range(201, 212))   # 201-211
-    nums += list(range(214, 220))   # 214-219
-    nums += list(range(221, 229))   # 221-228
-    nums += list(range(301, 309))   # 301-308
+    nums += list(range(101, 108))  # 101-107
+    nums += list(range(201, 212))  # 201-211
+    nums += list(range(214, 220))  # 214-219
+    nums += list(range(221, 229))  # 221-228
+    nums += list(range(301, 309))  # 301-308
     return [str(n) for n in nums]
 
 
@@ -344,7 +361,7 @@ def get_all_rooms_with_status(selected_date: date):
     for res in reservations:
         room_number = res[1]
         reservation_map[room_number] = {
-            "id": res[0],
+            "id": int(res[0]),
             "guest_name": res[2] or "",
             "num_guests": int(res[3] or 0),
             "tariff": float(res[4] or 0.0),
@@ -417,6 +434,7 @@ def save_reservation(
             return False
         room_id = int(room_row[0])
 
+        # Overlap check (ignore noshow/checkedout)
         if reservation_id:
             conflict = conn.execute(
                 """
@@ -461,7 +479,7 @@ def save_reservation(
                     int(num_guests),
                     float(tariff),
                     tstamp,
-                    reservation_id,
+                    int(reservation_id),
                 ),
             )
         else:
@@ -529,9 +547,9 @@ def get_guest_reservations(guest_name: str):
 
 
 def get_dashboard_stats(selected_date: date):
+    # Revenue removed from El Roll stats
     with db() as conn:
         total_rooms = conn.execute("SELECT COUNT(*) FROM rooms;").fetchone()[0]
-
         occupied_rooms = conn.execute(
             """
             SELECT COUNT(DISTINCT r.room_id)
@@ -541,7 +559,6 @@ def get_dashboard_stats(selected_date: date):
             """,
             (iso(selected_date), iso(selected_date)),
         ).fetchone()[0]
-
         total_guests = conn.execute(
             """
             SELECT COALESCE(SUM(r.num_guests), 0)
@@ -579,14 +596,18 @@ st.session_state.setdefault("selected_date", date.today())
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("search_suggestions", [])
 st.session_state.setdefault("delete_candidate", None)
-st.session_state.setdefault("elroll_edit_id", None)
+
+# El Roll selection + widget-key counter (FIX for StreamlitAPIException)
+st.session_state.setdefault("elroll_selected_res_id", None)
+st.session_state.setdefault("elroll_editor_key_n", 0)
 
 # load settings from DB
 if "lang" not in st.session_state:
     st.session_state.lang = get_setting("lang", "en")
 
-# ✅ Simplified view always on
+# ✅ Simplified mode always ON (switch removed)
 st.session_state.simplified_mode = True
+
 
 # ----------------- LOGIN -----------------
 if not st.session_state.authed:
@@ -601,10 +622,12 @@ if not st.session_state.authed:
             st.error(t("incorrect_password"))
     st.stop()
 
+
 # ----------------- SIDEBAR NAV -----------------
 st.sidebar.title(t("menu"))
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
+
 VIEW_MAP = {
     t("el_roll"): "el_roll",
     t("register_guests"): "register_guests",
@@ -612,6 +635,7 @@ VIEW_MAP = {
     t("settings"): "settings",
 }
 view_key = VIEW_MAP[view]
+
 
 # ----------------- ADMIN SIDEBAR -----------------
 st.sidebar.divider()
@@ -636,6 +660,7 @@ else:
         st.session_state.admin_pw_key += 1
         st.rerun()
 
+
 # logout
 st.sidebar.divider()
 if st.sidebar.button(t("logout")):
@@ -643,8 +668,10 @@ if st.sidebar.button(t("logout")):
     st.session_state.admin = False
     st.rerun()
 
+
 # ----------------- MAIN HEADER -----------------
 st.title(t("app_title"))
+
 
 # ----------------- VIEWS -----------------
 if view_key == "el_roll":
@@ -653,19 +680,22 @@ if view_key == "el_roll":
     with col1:
         if st.button(t("prev")):
             st.session_state.selected_date -= timedelta(days=1)
-            st.session_state.elroll_edit_id = None
+            st.session_state.elroll_selected_res_id = None
+            st.session_state.elroll_editor_key_n += 1
             st.rerun()
     with col2:
         if st.button(t("today")):
             st.session_state.selected_date = date.today()
-            st.session_state.elroll_edit_id = None
+            st.session_state.elroll_selected_res_id = None
+            st.session_state.elroll_editor_key_n += 1
             st.rerun()
     with col3:
         st.markdown(f"### {st.session_state.selected_date.strftime('%A, %B %d, %Y')}")
     with col4:
         if st.button(t("next")):
             st.session_state.selected_date += timedelta(days=1)
-            st.session_state.elroll_edit_id = None
+            st.session_state.elroll_selected_res_id = None
+            st.session_state.elroll_editor_key_n += 1
             st.rerun()
     with col5:
         new_date = st.date_input(
@@ -675,7 +705,8 @@ if view_key == "el_roll":
         )
         if new_date != st.session_state.selected_date:
             st.session_state.selected_date = new_date
-            st.session_state.elroll_edit_id = None
+            st.session_state.elroll_selected_res_id = None
+            st.session_state.elroll_editor_key_n += 1
             st.rerun()
 
     # Dashboard stats (Revenue removed)
@@ -702,8 +733,8 @@ if view_key == "el_roll":
                 t("tariff"): float(r["tariff"]) if r["tariff"] else 0.0,
                 t("observations"): r["notes"],
                 t("status"): status_display(r["status"]),
-                "_reservation_id": r["reservation_id"],
-                t("edit"): False,
+                "_reservation_id": r["reservation_id"],  # internal
+                t("select_to_edit"): False,
             }
         )
 
@@ -711,7 +742,13 @@ if view_key == "el_roll":
         st.info(t("no_results"))
     else:
         df = pd.DataFrame(rows)
-        st.caption(t("edit_row_hint"))
+
+        st.caption(t("select_row_hint"))
+
+        # IMPORTANT FIX:
+        # We NEVER assign to st.session_state[widget_key] after the widget exists.
+        # To "reset" the editor we bump elroll_editor_key_n which changes the widget key.
+        editor_key = f"elroll_editor_{st.session_state.elroll_editor_key_n}"
 
         edited_df = st.data_editor(
             df,
@@ -733,28 +770,38 @@ if view_key == "el_roll":
                 t("tariff"): st.column_config.NumberColumn(format="€%.2f", width="small"),
                 t("observations"): st.column_config.TextColumn(width="large"),
                 t("status"): st.column_config.TextColumn(width="medium"),
-                t("edit"): st.column_config.CheckboxColumn(width="small"),
+                t("select_to_edit"): st.column_config.CheckboxColumn(width="small"),
                 "_reservation_id": st.column_config.NumberColumn(width="small"),
             },
-            key="elroll_table_selector",
+            key=editor_key,
         )
 
+        # Determine the selected reservation (first checked row that has an id)
         selected_ids = edited_df.loc[
-            (edited_df[t("edit")] == True) & (edited_df["_reservation_id"].notna()),
+            (edited_df[t("select_to_edit")] == True) & (edited_df["_reservation_id"].notna()),
             "_reservation_id",
         ].tolist()
-        if selected_ids:
-            st.session_state.elroll_edit_id = int(selected_ids[0])
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            if st.button(t("clear_selection")):
-                st.session_state.elroll_edit_id = None
-                st.session_state["elroll_table_selector"] = df
+        if selected_ids:
+            st.session_state.elroll_selected_res_id = int(selected_ids[0])
+        else:
+            st.session_state.elroll_selected_res_id = None
+
+        btn1, btn2, btn3 = st.columns([1, 1, 2])
+        with btn1:
+            if st.button(t("edit_selected"), use_container_width=True, disabled=st.session_state.elroll_selected_res_id is None):
+                # Just open the editor section below (selection is already stored)
                 st.rerun()
-        with c2:
-            if st.button(t("export_csv")):
-                export_df = df.drop(columns=[t("edit"), "_reservation_id"], errors="ignore")
+
+        with btn2:
+            if st.button(t("clear_selection"), use_container_width=True):
+                st.session_state.elroll_selected_res_id = None
+                st.session_state.elroll_editor_key_n += 1  # reset editor safely
+                st.rerun()
+
+        with btn3:
+            if st.button(t("export_csv"), use_container_width=True):
+                export_df = df.drop(columns=[t("select_to_edit"), "_reservation_id"], errors="ignore")
                 csv = export_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=t("download_csv"),
@@ -763,10 +810,12 @@ if view_key == "el_roll":
                     mime="text/csv",
                 )
 
-        if st.session_state.elroll_edit_id:
-            reservation_data = get_reservation(int(st.session_state.elroll_edit_id))
+        # Inline editor panel
+        if st.session_state.elroll_selected_res_id is not None:
+            reservation_data = get_reservation(int(st.session_state.elroll_selected_res_id))
             if reservation_data:
                 res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff = reservation_data
+
                 st.divider()
                 st.subheader(t("edit_from_elroll"))
 
@@ -790,11 +839,22 @@ if view_key == "el_roll":
                     with e1:
                         pax_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
                     with e2:
-                        tariff_new = st.number_input(t("tariff"), min_value=0.0, value=float(tariff or 0.0), step=10.0, format="%.2f")
+                        tariff_new = st.number_input(
+                            t("tariff"),
+                            min_value=0.0,
+                            value=float(tariff or 0.0),
+                            step=10.0,
+                            format="%.2f",
+                        )
 
                     status_options = [s[0] for s in STATUSES]
                     status_idx = status_options.index(status) if status in status_options else 0
-                    status_new = st.selectbox(t("status"), status_options, index=status_idx, format_func=lambda x: STATUS_LABEL.get(x, x))
+                    status_new = st.selectbox(
+                        t("status"),
+                        status_options,
+                        index=status_idx,
+                        format_func=lambda x: STATUS_LABEL.get(x, x),
+                    )
 
                     notes_new = st.text_area(t("observations"), value=notes or "", height=100)
 
@@ -807,7 +867,8 @@ if view_key == "el_roll":
                         delete_btn = st.form_submit_button(f"🗑️ {t('delete')}")
 
                     if cancel_btn:
-                        st.session_state.elroll_edit_id = None
+                        st.session_state.elroll_selected_res_id = None
+                        st.session_state.elroll_editor_key_n += 1
                         st.rerun()
 
                     if save_btn:
@@ -829,7 +890,8 @@ if view_key == "el_roll":
                             )
                             if ok:
                                 st.success(t("saved"))
-                                st.session_state.elroll_edit_id = None
+                                st.session_state.elroll_selected_res_id = None
+                                st.session_state.elroll_editor_key_n += 1
                                 st.rerun()
                             else:
                                 st.error(t("room_occupied"))
@@ -838,6 +900,7 @@ if view_key == "el_roll":
                         st.session_state.delete_candidate = int(res_id)
                         st.rerun()
 
+                # Delete confirmation (outside the form)
                 if st.session_state.delete_candidate == int(res_id):
                     st.warning(t("delete_warning"))
                     x1, x2 = st.columns(2)
@@ -845,13 +908,16 @@ if view_key == "el_roll":
                         if st.button(t("confirm_delete"), type="primary"):
                             delete_reservation(int(res_id))
                             st.session_state.delete_candidate = None
-                            st.session_state.elroll_edit_id = None
+                            st.session_state.elroll_selected_res_id = None
+                            st.session_state.elroll_editor_key_n += 1
                             st.success(t("deleted"))
                             st.rerun()
                     with x2:
                         if st.button(t("cancel")):
                             st.session_state.delete_candidate = None
                             st.rerun()
+            else:
+                st.info(t("no_results"))
 
 elif view_key == "register_guests":
     st.subheader(t("register_guests"))
@@ -860,6 +926,7 @@ elif view_key == "register_guests":
         rooms = get_rooms()
         room_options = [r[1] for r in rooms]
         room_number = st.selectbox(t("room"), room_options, index=0)
+
         guest_name = st.text_input(t("guest_name"), value="")
 
         col1, col2 = st.columns(2)
@@ -878,6 +945,7 @@ elif view_key == "register_guests":
 
         status_options = [s[0] for s in STATUSES]
         status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: STATUS_LABEL.get(x, x))
+
         notes = st.text_area(t("observations"), value="", height=100)
 
         submit = st.form_submit_button(t("save"), type="primary")
@@ -1055,31 +1123,31 @@ elif view_key == "settings":
     st.divider()
 
     if st.session_state.admin:
-        st.markdown("### Database Management")
+        st.markdown(f"### {t('db_mgmt')}")
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Clear All Reservations", type="secondary"):
-                if st.checkbox("Are you sure? This cannot be undone."):
+            if st.button(t("clear_all_res"), type="secondary"):
+                if st.checkbox(t("clear_all_confirm")):
                     with db() as conn:
                         conn.execute("DELETE FROM reservations;")
                         conn.commit()
-                    st.success("All reservations cleared!")
+                    st.success("OK")
                     st.rerun()
 
         with col2:
-            if st.button("Reset to Default Rooms", type="secondary"):
-                if st.checkbox("Reset all rooms to configured defaults?"):
+            if st.button(t("reset_rooms"), type="secondary"):
+                if st.checkbox(t("reset_rooms_confirm")):
                     with db() as conn:
                         conn.execute("DELETE FROM rooms;")
                         for num in default_room_numbers():
                             conn.execute("INSERT OR IGNORE INTO rooms(number) VALUES (?);", (num,))
                         conn.commit()
-                    st.success("Rooms reset to defaults!")
+                    st.success(t("rooms_reset"))
                     st.rerun()
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v2.5")
+    st.write("Isla Verde Hotel Manager v2.6")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
