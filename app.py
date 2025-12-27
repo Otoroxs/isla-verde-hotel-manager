@@ -118,6 +118,7 @@ TEXT = {
         "download_latest_backup": "Download latest backup",
         "no_backups": "No backups found yet.",
         "last_backup": "Last backup",
+        "latest_backup": "Latest backup",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -206,6 +207,7 @@ TEXT = {
         "download_latest_backup": "Descargar último backup",
         "no_backups": "Aún no hay backups.",
         "last_backup": "Último backup",
+        "latest_backup": "Último backup",
     },
 }
 
@@ -278,6 +280,12 @@ def get_latest_backup_path() -> Optional[str]:
     ensure_backup_dir()
     backups = sorted(glob.glob(os.path.join(BACKUP_DIR, "hotel_*.db")))
     return backups[-1] if backups else None
+
+
+def get_latest_backup_name() -> str:
+    """Option 3: show last backup inside the UI."""
+    p = get_latest_backup_path()
+    return os.path.basename(p) if p else t("no_backups")
 
 
 def now_utc() -> str:
@@ -367,7 +375,6 @@ def init_db():
             );
             """
         )
-
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reservations (
@@ -386,7 +393,6 @@ def init_db():
             );
             """
         )
-
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         conn.commit()
 
@@ -629,7 +635,6 @@ def get_guest_reservations(guest_name: str):
 
 
 def get_dashboard_stats(selected_date: date):
-    # Revenue intentionally removed
     with db() as conn:
         total_rooms = conn.execute("SELECT COUNT(*) FROM rooms;").fetchone()[0]
         occupied_rooms = conn.execute(
@@ -672,7 +677,7 @@ def status_display(db_status: str) -> str:
 st.set_page_config(t("app_title"), layout="wide")
 
 init_db()
-create_backup(force=False)  # daily backup (first visit of the day)
+create_backup(force=False)  # create daily backup on first open of the day
 
 # Session defaults
 st.session_state.setdefault("authed", False)
@@ -770,24 +775,20 @@ if view_key == "el_roll":
             st.session_state.elroll_selected_res_id = None
             st.session_state.elroll_editor_key_n += 1
             st.rerun()
-
     with col2:
         if st.button(t("today")):
             st.session_state.selected_date = date.today()
             st.session_state.elroll_selected_res_id = None
             st.session_state.elroll_editor_key_n += 1
             st.rerun()
-
     with col3:
         st.markdown(f"### {st.session_state.selected_date.strftime('%A, %B %d, %Y')}")
-
     with col4:
         if st.button(t("next")):
             st.session_state.selected_date += timedelta(days=1)
             st.session_state.elroll_selected_res_id = None
             st.session_state.elroll_editor_key_n += 1
             st.rerun()
-
     with col5:
         new_date = st.date_input(
             t("select_date"),
@@ -802,11 +803,9 @@ if view_key == "el_roll":
 
     rooms_status = get_all_rooms_with_status(st.session_state.selected_date)
 
-    # Available rooms count + list
     available_rooms = [r["room_number"] for r in rooms_status if r["status"] == "available"]
     available_count = len(available_rooms)
 
-    # Stats (no revenue) + available rooms (clickable)
     stats = get_dashboard_stats(st.session_state.selected_date)
     a, b, c, d = st.columns(4)
     with a:
@@ -816,11 +815,9 @@ if view_key == "el_roll":
     with c:
         st.metric(t("occupancy_rate"), f"{stats['occupancy_rate']:.1f}%")
     with d:
-        # Clickable "window" (popover) with close button built-in
         with st.popover(f"{t('available_rooms')}: {available_count}"):
             st.markdown(f"**{t('available_rooms_list')}**")
             if available_rooms:
-                # Nice grid display
                 cols = st.columns(6)
                 for i, rn in enumerate(available_rooms):
                     cols[i % 6].write(f"• {rn}")
@@ -900,12 +897,10 @@ if view_key == "el_roll":
                     mime="text/csv",
                 )
 
-        # Inline edit panel
         if st.session_state.elroll_selected_res_id is not None:
             reservation_data = get_reservation(int(st.session_state.elroll_selected_res_id))
             if reservation_data:
                 res_id, room_number, guest_name, status, check_in_s, check_out_s, notes, num_guests, tariff = reservation_data
-
                 st.divider()
                 st.subheader(t("edit_from_elroll"))
 
@@ -929,22 +924,13 @@ if view_key == "el_roll":
                     with e1:
                         pax_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
                     with e2:
-                        tariff_new = st.number_input(
-                            t("tariff"),
-                            min_value=0.0,
-                            value=float(tariff or 0.0),
-                            step=10.0,
-                            format="%.2f",
-                        )
+                        tariff_new = st.number_input(t("tariff"), min_value=0.0, value=float(tariff or 0.0),
+                                                     step=10.0, format="%.2f")
 
                     status_options = [s[0] for s in STATUSES]
                     status_idx = status_options.index(status) if status in status_options else 0
-                    status_new = st.selectbox(
-                        t("status"),
-                        status_options,
-                        index=status_idx,
-                        format_func=lambda x: STATUS_LABEL.get(x, x),
-                    )
+                    status_new = st.selectbox(t("status"), status_options, index=status_idx,
+                                             format_func=lambda x: STATUS_LABEL.get(x, x))
 
                     notes_new = st.text_area(t("observations"), value=notes or "", height=100)
 
@@ -1196,6 +1182,9 @@ elif view_key == "settings":
 
     st.divider()
 
+    # ===== Option 3 (UI visibility): show latest backup =====
+    st.info(f"{t('latest_backup')}: {get_latest_backup_name()}")
+
     if st.session_state.admin:
         st.markdown("### Backups")
 
@@ -1255,6 +1244,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v3.2")
+    st.write("Isla Verde Hotel Manager v3.3")
     st.write("Simplified El Roll System (always on)")
     st.caption("© 2024 Hotel Isla Verde")
