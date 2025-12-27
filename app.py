@@ -24,8 +24,10 @@ STATUSES: List[Tuple[str, str]] = [
 ]
 STATUS_LABEL = {k: v for k, v in STATUSES}
 
-CURRENCIES = [("EUR", "€"), ("USD", "$")]
+# Currency: USD / CRC only
+CURRENCIES = [("USD", "$"), ("CRC", "₡")]
 CURRENCY_SYMBOL = {code: sym for code, sym in CURRENCIES}
+DEFAULT_CURRENCY = "USD"
 
 # Daily DB backups
 BACKUP_DIR = "backups"
@@ -62,8 +64,8 @@ TEXT = {
         "pax": "PAX",
         "tariff": "Tariff",
         "currency": "Currency",
-        "euros": "Euros (€)",
         "dollars": "Dollars ($)",
+        "colones": "Colones (₡)",
         "observations": "Observations",
         "status": "Status",
         "available": "Available",
@@ -127,7 +129,6 @@ TEXT = {
         "last_backup": "Last backup",
         "latest_backup": "Latest backup",
         "totals_by_currency": "Totals by currency",
-        "total_revenue": "Total Revenue",
         "total": "Total",
         "nights": "Nights",
         "stays": "Total Stays",
@@ -159,8 +160,8 @@ TEXT = {
         "pax": "PAX",
         "tariff": "Tarifa",
         "currency": "Moneda",
-        "euros": "Euros (€)",
         "dollars": "Dólares ($)",
+        "colones": "Colones (₡)",
         "observations": "Observaciones",
         "status": "Estado",
         "available": "Disponible",
@@ -224,7 +225,6 @@ TEXT = {
         "last_backup": "Último backup",
         "latest_backup": "Último backup",
         "totals_by_currency": "Totales por moneda",
-        "total_revenue": "Ingresos Totales",
         "total": "Total",
         "nights": "Noches",
         "stays": "Estancias Totales",
@@ -393,7 +393,7 @@ def init_db():
         )
 
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS reservations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id INTEGER NOT NULL,
@@ -404,7 +404,7 @@ def init_db():
                 notes TEXT DEFAULT "",
                 num_guests INTEGER DEFAULT 1,
                 tariff REAL DEFAULT 0,
-                currency TEXT DEFAULT "EUR",
+                currency TEXT DEFAULT "{DEFAULT_CURRENCY}",
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
@@ -412,9 +412,9 @@ def init_db():
             """
         )
 
-        # migrations / ensure columns exist for older DBs
+        # migrations for older DBs
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
-        ensure_column(conn, "reservations", 'currency TEXT DEFAULT "EUR"', "currency")
+        ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
         conn.commit()
 
         cur = conn.execute("SELECT COUNT(*) FROM rooms;")
@@ -432,6 +432,7 @@ def normalize_guest_name(name: str) -> str:
 
 
 def fmt_money(amount: float, currency: str) -> str:
+    currency = (currency or DEFAULT_CURRENCY).upper()
     sym = CURRENCY_SYMBOL.get(currency, "")
     try:
         return f"{sym}{float(amount):.2f}"
@@ -492,7 +493,7 @@ def get_all_rooms_with_status(selected_date: date):
             "guest_name": res[2] or "",
             "num_guests": int(res[3] or 0),
             "tariff": float(res[4] or 0.0),
-            "currency": (res[5] or "EUR").upper(),
+            "currency": (res[5] or DEFAULT_CURRENCY).upper(),
             "notes": res[6] or "",
             "status": res[7],
             "check_in": parse_iso(res[8]),
@@ -523,7 +524,7 @@ def get_all_rooms_with_status(selected_date: date):
                     "guest_name": "",
                     "num_guests": 0,
                     "tariff": 0.0,
-                    "currency": "EUR",
+                    "currency": DEFAULT_CURRENCY,
                     "notes": "",
                     "status": "available",
                     "reservation_id": None,
@@ -560,9 +561,9 @@ def save_reservation(
     reservation_id: Optional[int] = None,
 ) -> bool:
     guest_name = normalize_guest_name(guest_name)
-    currency = (currency or "EUR").upper()
+    currency = (currency or DEFAULT_CURRENCY).upper()
     if currency not in CURRENCY_SYMBOL:
-        currency = "EUR"
+        currency = DEFAULT_CURRENCY
 
     with db() as conn:
         room_row = conn.execute("SELECT id FROM rooms WHERE number = ?;", (room_number,)).fetchone()
@@ -812,7 +813,6 @@ show_register_popup_if_needed()
 # VIEWS
 # ============================================================
 if view_key == "el_roll":
-    # Date controls
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
     with col1:
         if st.button(t("prev")):
@@ -874,7 +874,7 @@ if view_key == "el_roll":
     for r in rooms_status:
         tariff_text = ""
         if r["occupied"] and float(r["tariff"] or 0) > 0:
-            tariff_text = fmt_money(float(r["tariff"]), r.get("currency", "EUR"))
+            tariff_text = fmt_money(float(r["tariff"]), r.get("currency", DEFAULT_CURRENCY))
         rows.append(
             {
                 t("room"): r["room_number"],
@@ -979,9 +979,10 @@ if view_key == "el_roll":
                             format="%.2f",
                         )
                     with e3:
-                        currency_labels = {"EUR": t("euros"), "USD": t("dollars")}
-                        currency_options = ["EUR", "USD"]
-                        cidx = currency_options.index((currency or "EUR").upper()) if (currency or "EUR").upper() in currency_options else 0
+                        currency_labels = {"USD": t("dollars"), "CRC": t("colones")}
+                        currency_options = ["USD", "CRC"]
+                        c = (currency or DEFAULT_CURRENCY).upper()
+                        cidx = currency_options.index(c) if c in currency_options else 0
                         currency_new = st.selectbox(
                             t("currency"),
                             currency_options,
@@ -1083,10 +1084,10 @@ elif view_key == "register_guests":
         with col4:
             tariff = st.number_input(t("tariff"), min_value=0.0, value=0.0, step=10.0, format="%.2f")
         with col5:
-            currency_labels = {"EUR": t("euros"), "USD": t("dollars")}
+            currency_labels = {"USD": t("dollars"), "CRC": t("colones")}
             currency = st.selectbox(
                 t("currency"),
-                ["EUR", "USD"],
+                ["USD", "CRC"],
                 index=0,
                 format_func=lambda x: currency_labels.get(x, x),
             )
@@ -1189,12 +1190,15 @@ elif view_key == "search_guests":
 
         if reservations:
             table_data = []
-            totals_by_currency: Dict[str, float] = {"EUR": 0.0, "USD": 0.0}
+            totals_by_currency: Dict[str, float] = {"USD": 0.0, "CRC": 0.0}
             total_nights = 0
 
             for res in reservations:
                 _, room_number, status, check_in_str, check_out_str, notes, num_guests, tariff, currency, updated_at = res
-                currency = (currency or "EUR").upper()
+                currency = (currency or DEFAULT_CURRENCY).upper()
+                if currency not in CURRENCY_SYMBOL:
+                    currency = DEFAULT_CURRENCY
+
                 check_in = parse_iso(check_in_str)
                 check_out = parse_iso(check_out_str)
                 nn = nights(check_in, check_out)
@@ -1226,9 +1230,8 @@ elif view_key == "search_guests":
             with m2:
                 st.metric(t("nights"), total_nights)
             with m3:
-                # Show totals by currency in one line
                 parts = []
-                for code in ["EUR", "USD"]:
+                for code in ["USD", "CRC"]:
                     amt = totals_by_currency.get(code, 0.0)
                     if abs(amt) > 0.0001:
                         parts.append(fmt_money(amt, code))
@@ -1327,6 +1330,6 @@ elif view_key == "settings":
 
     st.divider()
     st.markdown("### About")
-    st.write("Isla Verde Hotel Manager v3.4")
+    st.write("Isla Verde Hotel Manager v3.6")
     st.write("El Roll System")
     st.caption("© 2024 Hotel Isla Verde")
