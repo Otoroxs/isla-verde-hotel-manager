@@ -20,6 +20,9 @@ DB_PATH = "hotel.db"
 # Prefer Streamlit secrets in production. Fallbacks keep the app usable locally.
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
+st.write("Loaded secrets keys:", list(st.secrets.keys()))
+st.write("APP_PASSWORD in secrets:", "APP_PASSWORD" in st.secrets)
+st.write("ADMIN_PASSWORD in secrets:", "ADMIN_PASSWORD" in st.secrets)
 
 STATUSES: List[Tuple[str, str]] = [
     ("reserved", "Reserved"),
