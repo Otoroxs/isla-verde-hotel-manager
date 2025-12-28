@@ -1,28 +1,25 @@
 # Isla Verde Hotel Manager (single-file Streamlit app)
-# Drop-in replacement: copy/paste this whole file over your current one.
+# Updated: REMOVED the "default password" warning banner entirely.
+# Copy/paste this whole file to replace your current one.
 
 import os
 import glob
 import sqlite3
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional, List, Dict, Tuple
+from contextlib import contextmanager
 
 import pandas as pd
 import streamlit as st
-from contextlib import contextmanager
 
 # ============================================================
 # CONFIG
 # ============================================================
 DB_PATH = "hotel.db"
 
-# Prefer Streamlit secrets in production. Fallbacks keep the app usable locally.
+# Uses Streamlit secrets if present; otherwise uses these defaults.
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
-st.write("Loaded secrets keys:", list(st.secrets.keys()))
-st.write("APP_PASSWORD in secrets:", "APP_PASSWORD" in st.secrets)
-st.write("ADMIN_PASSWORD in secrets:", "ADMIN_PASSWORD" in st.secrets)
 
 STATUSES: List[Tuple[str, str]] = [
     ("reserved", "Reserved"),
@@ -143,9 +140,8 @@ TEXT = {
         "total": "Total",
         "nights": "Nights",
         "stays": "Total Stays",
-        "security_warning": "Security note: You are using default passwords. Set APP_PASSWORD and ADMIN_PASSWORD in Streamlit secrets.",
-        "unexpected_error": "Unexpected error",
         "confirm_action": "Confirm action",
+        "unexpected_error": "Unexpected error",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -242,9 +238,8 @@ TEXT = {
         "total": "Total",
         "nights": "Noches",
         "stays": "Estancias Totales",
-        "security_warning": "Nota de seguridad: Estás usando contraseñas por defecto. Configura APP_PASSWORD y ADMIN_PASSWORD en Streamlit secrets.",
-        "unexpected_error": "Error inesperado",
         "confirm_action": "Confirmar acción",
+        "unexpected_error": "Error inesperado",
     },
 }
 
@@ -307,7 +302,7 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA busy_timeout = 5000;")  # wait up to 5s if locked
+    conn.execute("PRAGMA busy_timeout = 5000;")
     return conn
 
 
@@ -375,11 +370,11 @@ def set_setting(key: str, value: str):
 
 def default_room_numbers() -> List[str]:
     nums: List[int] = []
-    nums += list(range(101, 108))  # 101-107
-    nums += list(range(201, 212))  # 201-211
-    nums += list(range(214, 220))  # 214-219
-    nums += list(range(221, 229))  # 221-228
-    nums += list(range(301, 309))  # 301-308
+    nums += list(range(101, 108))
+    nums += list(range(201, 212))
+    nums += list(range(214, 220))
+    nums += list(range(221, 229))
+    nums += list(range(301, 309))
     return [str(n) for n in nums]
 
 
@@ -393,7 +388,6 @@ def init_db():
             );
             """
         )
-
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS reservations (
@@ -414,11 +408,9 @@ def init_db():
             """
         )
 
-        # migrations for older DBs
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
 
-        # seed rooms if empty
         cur = conn.execute("SELECT COUNT(*) AS c FROM rooms;").fetchone()
         if int(cur["c"]) == 0:
             for num in default_room_numbers():
@@ -426,7 +418,7 @@ def init_db():
 
 
 # ============================================================
-# BACKUPS (safer: temp file then atomic rename)
+# BACKUPS
 # ============================================================
 def ensure_backup_dir():
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -450,7 +442,6 @@ def cleanup_old_backups(keep_days: int = BACKUP_RETENTION_DAYS):
 
 
 def create_backup(force: bool = False) -> Optional[str]:
-    """Creates at most one backup per day unless force=True."""
     ensure_backup_dir()
     today = date.today().isoformat()
     final_path = os.path.join(BACKUP_DIR, f"hotel_{today}.db")
@@ -489,7 +480,6 @@ def get_latest_backup_name() -> str:
     return os.path.basename(p) if p else t("no_backups")
 
 
-# Run init+backup once per process/day (avoid rerun locking)
 @st.cache_resource
 def init_db_once():
     init_db()
@@ -568,7 +558,7 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
                     "guest_name": res["guest_name"],
                     "num_guests": res["num_guests"],
                     "tariff": res["tariff"],
-                    "currency": res["currency"],
+                    "currency": (res["currency"] or DEFAULT_CURRENCY).upper(),
                     "notes": res["notes"],
                     "status": res["status"],
                     "reservation_id": res["id"],
@@ -628,7 +618,6 @@ def save_reservation(
     currency = _normalize_currency(currency)
     status = status if status in VALID_STATUSES else "reserved"
 
-    # Basic guardrails (UI already checks, but keep it safe)
     if not room_number or not guest_name:
         return False
     if check_out <= check_in:
@@ -640,12 +629,7 @@ def save_reservation(
             return False
         room_id = int(room_row["id"])
 
-        # Overlap check: overlap if existing.check_in < new_check_out AND new_check_in < existing.check_out
-        params = {
-            "room_id": room_id,
-            "new_ci": iso(check_in),
-            "new_co": iso(check_out),
-        }
+        params = {"room_id": room_id, "new_ci": iso(check_in), "new_co": iso(check_out)}
 
         if reservation_id is not None:
             params["rid"] = int(reservation_id)
@@ -682,15 +666,8 @@ def save_reservation(
             conn.execute(
                 """
                 UPDATE reservations
-                SET guest_name=?,
-                    status=?,
-                    check_in=?,
-                    check_out=?,
-                    notes=?,
-                    num_guests=?,
-                    tariff=?,
-                    currency=?,
-                    updated_at=?
+                SET guest_name=?, status=?, check_in=?, check_out=?, notes=?,
+                    num_guests=?, tariff=?, currency=?, updated_at=?
                 WHERE id=?;
                 """,
                 (
@@ -729,7 +706,6 @@ def save_reservation(
                     tstamp,
                 ),
             )
-
         return True
 
 
@@ -774,7 +750,6 @@ def get_guest_reservations(guest_name: str) -> List[sqlite3.Row]:
 def get_dashboard_stats(selected_date: date) -> Dict[str, float]:
     with db() as conn:
         total_rooms = int(conn.execute("SELECT COUNT(*) AS c FROM rooms;").fetchone()["c"])
-
         occupied_rooms = int(
             conn.execute(
                 """
@@ -786,7 +761,6 @@ def get_dashboard_stats(selected_date: date) -> Dict[str, float]:
                 (iso(selected_date), iso(selected_date)),
             ).fetchone()["c"]
         )
-
         total_guests = int(
             conn.execute(
                 """
@@ -847,10 +821,6 @@ def show_register_popup_if_needed():
 if not st.session_state.authed:
     st.title(t("app_title"))
     st.caption(t("enter_password"))
-
-    # Security note if defaults are in use
-    if APP_PASSWORD == "islaverde" or ADMIN_PASSWORD == "admin000":
-        st.warning(t("security_warning"))
 
     pw = st.text_input(t("password"), type="password")
     if st.button(t("log_in")):
@@ -1423,7 +1393,6 @@ try:
         if st.session_state.admin:
             st.markdown(f"### {t('db_mgmt')}")
 
-            # Clear all reservations confirmation flow
             if st.button(t("clear_all_res"), type="secondary"):
                 st.session_state.confirm_clear_all = True
 
@@ -1444,7 +1413,6 @@ try:
 
             st.divider()
 
-            # Reset rooms confirmation flow
             if st.button(t("reset_rooms"), type="secondary"):
                 st.session_state.confirm_reset_rooms = True
 
@@ -1472,6 +1440,5 @@ try:
         st.caption("© 2024 Hotel Isla Verde")
 
 except Exception as e:
-    # Last-resort guard so the app doesn’t white-screen. Still shows the error for debugging.
     st.error(f"{t('unexpected_error')}: {e}")
     st.stop()
