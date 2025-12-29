@@ -1,12 +1,13 @@
 # Isla Verde Hotel Manager (single-file Streamlit app)
-# UPDATED:
-# - Login is now USERNAME + PASSWORD (no Streamlit secrets required for auth)
-# - Users:
-#     receptionist a  / ISLA1
-#     receptionist b  / ISLA2
-#     admin           / admin000
-# - Every change is tracked in an AUDIT LOG (who did what + when)
-# - Admin can view audit log in Settings
+# v3.7.1
+# FEATURES:
+# - Login with Username + Password (no Streamlit secrets required for auth)
+#   * receptionist a / ISLA1
+#   * receptionist b / ISLA2
+#   * admin / admin000
+# - Audit Log: tracks who made what change (login/logout/create/update/delete/backups/db actions)
+# - Admin-only: room management, backups, DB management, audit log viewer/export
+# - Daily automatic backup (once per day) + manual backups (admin)
 
 import os
 import glob
@@ -48,7 +49,7 @@ DEFAULT_CURRENCY = "USD"
 BACKUP_DIR = "backups"
 BACKUP_RETENTION_DAYS = 30  # keep last N daily backups
 
-APP_VERSION = "v3.7"
+APP_VERSION = "v3.7.1"
 
 # ============================================================
 # I18N
@@ -150,6 +151,7 @@ TEXT = {
         "audit_hint": "Shows who made what changes (latest first).",
         "audit_export": "Export audit log CSV",
         "audit_download": "Download audit CSV",
+        "enter_username": "Enter username",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -247,6 +249,7 @@ TEXT = {
         "audit_hint": "Muestra quién hizo qué cambios (lo más reciente primero).",
         "audit_export": "Exportar auditoría a CSV",
         "audit_download": "Descargar auditoría CSV",
+        "enter_username": "Ingrese usuario",
     },
 }
 
@@ -309,12 +312,16 @@ def current_user() -> str:
     return st.session_state.get("user", "unknown")
 
 
+def current_role() -> str:
+    return st.session_state.get("role", "unknown")
+
+
 def is_admin() -> bool:
     return st.session_state.get("role") == "admin"
 
 
 # ============================================================
-# DB (safe defaults for Streamlit reruns + less locking)
+# DB (safer for Streamlit reruns + less locking)
 # ============================================================
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -388,7 +395,6 @@ def init_db():
             """
         )
 
-        # Audit table (who did what)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -404,6 +410,15 @@ def init_db():
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+
         # migrations
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
@@ -411,28 +426,12 @@ def init_db():
 
 def get_setting(key: str, default: str) -> str:
     with db() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
         row = conn.execute("SELECT value FROM settings WHERE key=?;", (key,)).fetchone()
         return str(row["value"]) if row else default
 
 
 def set_setting(key: str, value: str):
     with db() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
         conn.execute(
             "INSERT INTO settings(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
@@ -442,11 +441,11 @@ def set_setting(key: str, value: str):
 
 def default_room_numbers() -> List[str]:
     nums: List[int] = []
-    nums += list(range(101, 108))  # 101-107
-    nums += list(range(201, 212))  # 201-211
-    nums += list(range(214, 220))  # 214-219
-    nums += list(range(221, 229))  # 221-228
-    nums += list(range(301, 309))  # 301-308
+    nums += list(range(101, 108))
+    nums += list(range(201, 212))
+    nums += list(range(214, 220))
+    nums += list(range(221, 229))
+    nums += list(range(301, 309))
     return [str(n) for n in nums]
 
 
@@ -459,15 +458,13 @@ def seed_rooms_if_empty():
 
 
 def log_audit(action: str, entity: str, entity_id: Optional[int] = None, details: str = ""):
-    u = current_user()
-    r = st.session_state.get("role", "unknown")
     with db() as conn:
         conn.execute(
             """
             INSERT INTO audit_log(ts, user, role, action, entity, entity_id, details)
             VALUES(?,?,?,?,?,?,?);
             """,
-            (now_utc(), u, r, action, entity, entity_id, details),
+            (now_utc(), current_user(), current_role(), action, entity, entity_id, details),
         )
 
 
@@ -561,7 +558,7 @@ def add_room(num: str):
         raise ValueError("Empty room number")
     with db() as conn:
         conn.execute("INSERT INTO rooms(number) VALUES (?);", (num,))
-        rid = conn.execute("SELECT id FROM rooms WHERE number=?;", (num,)).fetchone()["id"]
+        rid = int(conn.execute("SELECT id FROM rooms WHERE number=?;", (num,)).fetchone()["id"])
     log_audit("CREATE", "room", rid, f"Added room {num}")
 
 
@@ -684,7 +681,6 @@ def save_reservation(
             return False
         room_id = int(room_row["id"])
 
-        # overlap check: existing.check_in < new_check_out AND new_check_in < existing.check_out
         params = {"room_id": room_id, "new_ci": iso(check_in), "new_co": iso(check_out)}
         if reservation_id is not None:
             params["rid"] = int(reservation_id)
@@ -774,7 +770,6 @@ def save_reservation(
 
 
 def delete_reservation(res_id: int):
-    # capture details before delete
     row = get_reservation(int(res_id))
     details = ""
     if row:
@@ -906,8 +901,11 @@ if not st.session_state.authed:
     st.title(t("app_title"))
     st.caption(t("enter_login"))
 
-    # Username + password
-    username = st.text_input(t("username"), value="", placeholder="receptionist a / receptionist b / admin")
+    username = st.text_input(
+        t("username"),
+        value="",
+        placeholder=t("enter_username"),
+    )
     pw = st.text_input(t("password"), type="password")
 
     if st.button(t("log_in")):
@@ -925,10 +923,8 @@ if not st.session_state.authed:
 
 # ----------------- SIDEBAR -----------------
 st.sidebar.title(t("menu"))
-
-# show current user
 st.sidebar.caption(f"**{t('logged_in_as')}**: {current_user()}")
-st.sidebar.caption(f"**{t('role')}**: {st.session_state.get('role','')}")
+st.sidebar.caption(f"**{t('role')}**: {current_role()}")
 
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
@@ -1275,7 +1271,6 @@ try:
                     else:
                         st.error(t("room_occupied"))
 
-        # Room management is admin-only
         if is_admin():
             st.divider()
             st.subheader(t("room_management"))
@@ -1315,7 +1310,7 @@ try:
 
         top1, top2 = st.columns([4, 1])
         with top1:
-            search_input = st.text_input(
+            search_input = np = st.text_input(
                 t("guest_name"),
                 value=st.session_state.search_last_input,
                 placeholder=t("search_placeholder"),
@@ -1433,7 +1428,6 @@ try:
         st.divider()
         st.info(f"{t('latest_backup')}: {get_latest_backup_name()}")
 
-        # Backups (admin only)
         if is_admin():
             st.markdown("### Backups")
             latest = get_latest_backup_path()
@@ -1468,7 +1462,6 @@ try:
             st.divider()
             st.markdown(f"### {t('db_mgmt')}")
 
-            # Clear all reservations confirmation flow
             if st.button(t("clear_all_res"), type="secondary"):
                 st.session_state.confirm_clear_all = True
 
@@ -1490,7 +1483,6 @@ try:
 
             st.divider()
 
-            # Reset rooms confirmation flow
             if st.button(t("reset_rooms"), type="secondary"):
                 st.session_state.confirm_reset_rooms = True
 
