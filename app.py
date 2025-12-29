@@ -1,6 +1,12 @@
 # Isla Verde Hotel Manager (single-file Streamlit app)
-# Updated: REMOVED the "default password" warning banner entirely.
-# Copy/paste this whole file to replace your current one.
+# UPDATED:
+# - Login is now USERNAME + PASSWORD (no Streamlit secrets required for auth)
+# - Users:
+#     receptionist a  / ISLA1
+#     receptionist b  / ISLA2
+#     admin           / admin000
+# - Every change is tracked in an AUDIT LOG (who did what + when)
+# - Admin can view audit log in Settings
 
 import os
 import glob
@@ -17,9 +23,12 @@ import streamlit as st
 # ============================================================
 DB_PATH = "hotel.db"
 
-# Uses Streamlit secrets if present; otherwise uses these defaults.
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", "islaverde")
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin000")
+# USER ACCOUNTS (as requested)
+USERS = {
+    "receptionist a": {"password": "ISLA1", "role": "receptionist"},
+    "receptionist b": {"password": "ISLA2", "role": "receptionist"},
+    "admin": {"password": "admin000", "role": "admin"},
+}
 
 STATUSES: List[Tuple[str, str]] = [
     ("reserved", "Reserved"),
@@ -39,7 +48,7 @@ DEFAULT_CURRENCY = "USD"
 BACKUP_DIR = "backups"
 BACKUP_RETENTION_DAYS = 30  # keep last N daily backups
 
-APP_VERSION = "v3.6"
+APP_VERSION = "v3.7"
 
 # ============================================================
 # I18N
@@ -47,10 +56,13 @@ APP_VERSION = "v3.6"
 TEXT = {
     "en": {
         "app_title": "Isla Verde Hotel Manager",
-        "enter_password": "Enter password to access.",
+        "enter_login": "Enter your username and password to access.",
+        "username": "Username",
         "password": "Password",
         "log_in": "Log in",
-        "incorrect_password": "Incorrect password.",
+        "incorrect_login": "Incorrect username or password.",
+        "logged_in_as": "Logged in as",
+        "role": "Role",
         "menu": "Menu",
         "go_to": "Go to",
         "el_roll": "El Roll",
@@ -58,12 +70,6 @@ TEXT = {
         "search_guests": "Search Guests",
         "settings": "Settings",
         "logout": "Logout",
-        "admin_sensitive": "Admin (sensitive view)",
-        "admin_mode_on": "Admin mode: ON",
-        "disable_admin": "Disable admin",
-        "admin_password": "Admin password",
-        "unlock_admin": "Unlock admin",
-        "type_admin_pass": "Type admin pass…",
         "today": "Today",
         "prev": "◀",
         "next": "▶",
@@ -81,7 +87,6 @@ TEXT = {
         "save": "Save",
         "update": "Update",
         "delete": "Delete",
-        "edit": "Edit",
         "saved": "Saved successfully!",
         "deleted": "Deleted successfully!",
         "search_placeholder": "Search reservations…",
@@ -137,18 +142,24 @@ TEXT = {
         "last_backup": "Last backup",
         "latest_backup": "Latest backup",
         "totals_by_currency": "Totals by currency",
-        "total": "Total",
         "nights": "Nights",
         "stays": "Total Stays",
         "confirm_action": "Confirm action",
         "unexpected_error": "Unexpected error",
+        "audit_log": "Audit Log",
+        "audit_hint": "Shows who made what changes (latest first).",
+        "audit_export": "Export audit log CSV",
+        "audit_download": "Download audit CSV",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
-        "enter_password": "Introduce la contraseña para acceder.",
+        "enter_login": "Introduce tu usuario y contraseña para acceder.",
+        "username": "Usuario",
         "password": "Contraseña",
         "log_in": "Entrar",
-        "incorrect_password": "Contraseña incorrecta.",
+        "incorrect_login": "Usuario o contraseña incorrectos.",
+        "logged_in_as": "Sesión iniciada como",
+        "role": "Rol",
         "menu": "Menú",
         "go_to": "Ir a",
         "el_roll": "El Roll",
@@ -156,12 +167,6 @@ TEXT = {
         "search_guests": "Buscar Huéspedes",
         "settings": "Ajustes",
         "logout": "Cerrar sesión",
-        "admin_sensitive": "Admin (vista sensible)",
-        "admin_mode_on": "Modo admin: ACTIVADO",
-        "disable_admin": "Desactivar admin",
-        "admin_password": "Contraseña admin",
-        "unlock_admin": "Desbloquear admin",
-        "type_admin_pass": "Escribe la contraseña admin…",
         "today": "Hoy",
         "prev": "◀",
         "next": "▶",
@@ -179,7 +184,6 @@ TEXT = {
         "save": "Guardar",
         "update": "Actualizar",
         "delete": "Borrar",
-        "edit": "Editar",
         "saved": "¡Guardado exitosamente!",
         "deleted": "¡Borrado exitosamente!",
         "search_placeholder": "Buscar reservas…",
@@ -235,11 +239,14 @@ TEXT = {
         "last_backup": "Último backup",
         "latest_backup": "Último backup",
         "totals_by_currency": "Totales por moneda",
-        "total": "Total",
         "nights": "Noches",
         "stays": "Estancias Totales",
         "confirm_action": "Confirmar acción",
         "unexpected_error": "Error inesperado",
+        "audit_log": "Registro de Auditoría",
+        "audit_hint": "Muestra quién hizo qué cambios (lo más reciente primero).",
+        "audit_export": "Exportar auditoría a CSV",
+        "audit_download": "Descargar auditoría CSV",
     },
 }
 
@@ -250,7 +257,7 @@ def t(key: str) -> str:
 
 
 # ============================================================
-# DATE / FORMAT HELPERS
+# HELPERS
 # ============================================================
 def now_utc() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
@@ -278,8 +285,13 @@ def normalize_guest_name(name: str) -> str:
     return " ".join((name or "").strip().split())
 
 
+def _normalize_currency(currency: str) -> str:
+    c = (currency or DEFAULT_CURRENCY).upper()
+    return c if c in CURRENCY_SYMBOL else DEFAULT_CURRENCY
+
+
 def fmt_money(amount: float, currency: str) -> str:
-    currency = (currency or DEFAULT_CURRENCY).upper()
+    currency = _normalize_currency(currency)
     sym = CURRENCY_SYMBOL.get(currency, "")
     try:
         return f"{sym}{float(amount):.2f}"
@@ -291,6 +303,14 @@ def status_display(db_status: str) -> str:
     if db_status == "available":
         return t("available")
     return STATUS_LABEL.get(db_status, db_status)
+
+
+def current_user() -> str:
+    return st.session_state.get("user", "unknown")
+
+
+def is_admin() -> bool:
+    return st.session_state.get("role") == "admin"
 
 
 # ============================================================
@@ -337,6 +357,58 @@ def ensure_column(conn: sqlite3.Connection, table: str, col_def_sql: str, col_na
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def_sql};")
 
 
+def init_db():
+    with db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rooms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                number TEXT NOT NULL UNIQUE
+            );
+            """
+        )
+
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                room_id INTEGER NOT NULL,
+                guest_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                check_in TEXT NOT NULL,
+                check_out TEXT NOT NULL,
+                notes TEXT DEFAULT "",
+                num_guests INTEGER DEFAULT 1,
+                tariff REAL DEFAULT 0,
+                currency TEXT DEFAULT "{DEFAULT_CURRENCY}",
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
+            );
+            """
+        )
+
+        # Audit table (who did what)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                user TEXT NOT NULL,
+                role TEXT NOT NULL,
+                action TEXT NOT NULL,
+                entity TEXT NOT NULL,
+                entity_id INTEGER,
+                details TEXT
+            );
+            """
+        )
+
+        # migrations
+        ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
+        ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
+
+
 def get_setting(key: str, default: str) -> str:
     with db() as conn:
         conn.execute(
@@ -370,55 +442,37 @@ def set_setting(key: str, value: str):
 
 def default_room_numbers() -> List[str]:
     nums: List[int] = []
-    nums += list(range(101, 108))
-    nums += list(range(201, 212))
-    nums += list(range(214, 220))
-    nums += list(range(221, 229))
-    nums += list(range(301, 309))
+    nums += list(range(101, 108))  # 101-107
+    nums += list(range(201, 212))  # 201-211
+    nums += list(range(214, 220))  # 214-219
+    nums += list(range(221, 229))  # 221-228
+    nums += list(range(301, 309))  # 301-308
     return [str(n) for n in nums]
 
 
-def init_db():
+def seed_rooms_if_empty():
     with db() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rooms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                number TEXT NOT NULL UNIQUE
-            );
-            """
-        )
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS reservations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                room_id INTEGER NOT NULL,
-                guest_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                check_in TEXT NOT NULL,
-                check_out TEXT NOT NULL,
-                notes TEXT DEFAULT "",
-                num_guests INTEGER DEFAULT 1,
-                tariff REAL DEFAULT 0,
-                currency TEXT DEFAULT "{DEFAULT_CURRENCY}",
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
-            );
-            """
-        )
-
-        ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
-        ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
-
-        cur = conn.execute("SELECT COUNT(*) AS c FROM rooms;").fetchone()
-        if int(cur["c"]) == 0:
+        c = int(conn.execute("SELECT COUNT(*) AS c FROM rooms;").fetchone()["c"])
+        if c == 0:
             for num in default_room_numbers():
                 conn.execute("INSERT OR IGNORE INTO rooms(number) VALUES (?);", (num,))
 
 
+def log_audit(action: str, entity: str, entity_id: Optional[int] = None, details: str = ""):
+    u = current_user()
+    r = st.session_state.get("role", "unknown")
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_log(ts, user, role, action, entity, entity_id, details)
+            VALUES(?,?,?,?,?,?,?);
+            """,
+            (now_utc(), u, r, action, entity, entity_id, details),
+        )
+
+
 # ============================================================
-# BACKUPS
+# BACKUPS (safe temp -> atomic rename)
 # ============================================================
 def ensure_backup_dir():
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -481,8 +535,9 @@ def get_latest_backup_name() -> str:
 
 
 @st.cache_resource
-def init_db_once():
+def init_once():
     init_db()
+    seed_rooms_if_empty()
     return True
 
 
@@ -506,11 +561,16 @@ def add_room(num: str):
         raise ValueError("Empty room number")
     with db() as conn:
         conn.execute("INSERT INTO rooms(number) VALUES (?);", (num,))
+        rid = conn.execute("SELECT id FROM rooms WHERE number=?;", (num,)).fetchone()["id"]
+    log_audit("CREATE", "room", rid, f"Added room {num}")
 
 
-def delete_room(rid: int):
+def delete_room(room_id: int):
     with db() as conn:
-        conn.execute("DELETE FROM rooms WHERE id=?;", (int(rid),))
+        row = conn.execute("SELECT number FROM rooms WHERE id=?;", (int(room_id),)).fetchone()
+        room_number = row["number"] if row else ""
+        conn.execute("DELETE FROM rooms WHERE id=?;", (int(room_id),))
+    log_audit("DELETE", "room", int(room_id), f"Deleted room {room_number}")
 
 
 def get_reservations_for_date(selected_date: date) -> List[sqlite3.Row]:
@@ -540,7 +600,7 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
             "guest_name": res["guest_name"] or "",
             "num_guests": int(res["num_guests"] or 0),
             "tariff": float(res["tariff"] or 0.0),
-            "currency": (res["currency"] or DEFAULT_CURRENCY).upper(),
+            "currency": _normalize_currency(res["currency"] or DEFAULT_CURRENCY),
             "notes": res["notes"] or "",
             "status": res["status"],
             "check_in": parse_iso(res["check_in"]),
@@ -558,7 +618,7 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
                     "guest_name": res["guest_name"],
                     "num_guests": res["num_guests"],
                     "tariff": res["tariff"],
-                    "currency": (res["currency"] or DEFAULT_CURRENCY).upper(),
+                    "currency": res["currency"],
                     "notes": res["notes"],
                     "status": res["status"],
                     "reservation_id": res["id"],
@@ -596,11 +656,6 @@ def get_reservation(res_id: int) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def _normalize_currency(currency: str) -> str:
-    c = (currency or DEFAULT_CURRENCY).upper()
-    return c if c in CURRENCY_SYMBOL else DEFAULT_CURRENCY
-
-
 def save_reservation(
     room_number: str,
     guest_name: str,
@@ -624,13 +679,13 @@ def save_reservation(
         return False
 
     with db() as conn:
-        room_row = conn.execute("SELECT id FROM rooms WHERE number = ?;", (room_number,)).fetchone()
+        room_row = conn.execute("SELECT id FROM rooms WHERE number=?;", (room_number,)).fetchone()
         if not room_row:
             return False
         room_id = int(room_row["id"])
 
+        # overlap check: existing.check_in < new_check_out AND new_check_in < existing.check_out
         params = {"room_id": room_id, "new_ci": iso(check_in), "new_co": iso(check_out)}
-
         if reservation_id is not None:
             params["rid"] = int(reservation_id)
             conflict = conn.execute(
@@ -683,13 +738,13 @@ def save_reservation(
                     int(reservation_id),
                 ),
             )
+            action = "UPDATE"
+            rid = int(reservation_id)
         else:
             conn.execute(
                 """
-                INSERT INTO reservations(
-                    room_id, guest_name, status, check_in, check_out,
-                    notes, num_guests, tariff, currency, created_at, updated_at
-                )
+                INSERT INTO reservations(room_id, guest_name, status, check_in, check_out,
+                                         notes, num_guests, tariff, currency, created_at, updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?);
                 """,
                 (
@@ -706,12 +761,27 @@ def save_reservation(
                     tstamp,
                 ),
             )
-        return True
+            rid = int(conn.execute("SELECT last_insert_rowid() AS id;").fetchone()["id"])
+            action = "CREATE"
+
+    log_audit(
+        action,
+        "reservation",
+        rid,
+        f"room={room_number}; name={guest_name}; status={status}; ci={iso(check_in)}; co={iso(check_out)}; pax={int(num_guests)}; tariff={float(tariff)} {currency}",
+    )
+    return True
 
 
 def delete_reservation(res_id: int):
+    # capture details before delete
+    row = get_reservation(int(res_id))
+    details = ""
+    if row:
+        details = f"room={row['room_number']}; name={row['guest_name']}; ci={row['check_in']}; co={row['check_out']}; status={row['status']}"
     with db() as conn:
         conn.execute("DELETE FROM reservations WHERE id=?;", (int(res_id),))
+    log_audit("DELETE", "reservation", int(res_id), details)
 
 
 def search_guests(query: str, limit: int = 10) -> List[str]:
@@ -719,7 +789,7 @@ def search_guests(query: str, limit: int = 10) -> List[str]:
         return []
     q = query.strip()
     with db() as conn:
-        results = conn.execute(
+        rows = conn.execute(
             """
             SELECT DISTINCT guest_name
             FROM reservations
@@ -729,7 +799,7 @@ def search_guests(query: str, limit: int = 10) -> List[str]:
             """,
             (f"%{q}%", int(limit)),
         ).fetchall()
-        return [str(r["guest_name"]) for r in results]
+        return [str(r["guest_name"]) for r in rows]
 
 
 def get_guest_reservations(guest_name: str) -> List[sqlite3.Row]:
@@ -772,7 +842,6 @@ def get_dashboard_stats(selected_date: date) -> Dict[str, float]:
                 (iso(selected_date), iso(selected_date)),
             ).fetchone()["c"]
         )
-
     occupancy_rate = (occupied_rooms / total_rooms * 100) if total_rooms > 0 else 0.0
     return {
         "total_rooms": float(total_rooms),
@@ -782,20 +851,36 @@ def get_dashboard_stats(selected_date: date) -> Dict[str, float]:
     }
 
 
+def get_audit_log(limit: int = 300) -> pd.DataFrame:
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, user, role, action, entity, entity_id, details
+            FROM audit_log
+            ORDER BY id DESC
+            LIMIT ?;
+            """,
+            (int(limit),),
+        ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["ts", "user", "role", "action", "entity", "entity_id", "details"])
+    return pd.DataFrame([dict(r) for r in rows])
+
+
 # ============================================================
 # STREAMLIT APP START
 # ============================================================
 st.set_page_config(TEXT["en"]["app_title"], layout="wide")
 
-# Safer init/backup (avoid rerun lock storms)
-init_db_once()
+init_once()
 _ = daily_backup_once(date.today().isoformat())
 
 # Session defaults
 st.session_state.setdefault("authed", False)
-st.session_state.setdefault("admin", False)
-st.session_state.setdefault("admin_pw_key", 0)
+st.session_state.setdefault("user", None)
+st.session_state.setdefault("role", None)
 st.session_state.setdefault("selected_date", date.today())
+
 st.session_state.setdefault("register_popup", False)
 st.session_state.setdefault("elroll_selected_res_id", None)
 st.session_state.setdefault("elroll_editor_key_n", 0)
@@ -803,7 +888,6 @@ st.session_state.setdefault("search_last_input", "")
 st.session_state.setdefault("search_active_name", None)
 st.session_state.setdefault("delete_candidate", None)
 
-# Confirm dialogs (avoid checkbox-after-button bugs)
 st.session_state.setdefault("confirm_clear_all", False)
 st.session_state.setdefault("confirm_reset_rooms", False)
 
@@ -820,19 +904,32 @@ def show_register_popup_if_needed():
 # ----------------- LOGIN -----------------
 if not st.session_state.authed:
     st.title(t("app_title"))
-    st.caption(t("enter_password"))
+    st.caption(t("enter_login"))
 
+    # Username + password
+    username = st.text_input(t("username"), value="", placeholder="receptionist a / receptionist b / admin")
     pw = st.text_input(t("password"), type="password")
+
     if st.button(t("log_in")):
-        if pw == APP_PASSWORD:
+        u = (username or "").strip().lower()
+        record = USERS.get(u)
+        if record and pw == record["password"]:
             st.session_state.authed = True
+            st.session_state.user = u
+            st.session_state.role = record["role"]
+            log_audit("LOGIN", "session", None, f"user={u}; role={record['role']}")
             st.rerun()
         else:
-            st.error(t("incorrect_password"))
+            st.error(t("incorrect_login"))
     st.stop()
 
-# ----------------- SIDEBAR NAV -----------------
+# ----------------- SIDEBAR -----------------
 st.sidebar.title(t("menu"))
+
+# show current user
+st.sidebar.caption(f"**{t('logged_in_as')}**: {current_user()}")
+st.sidebar.caption(f"**{t('role')}**: {st.session_state.get('role','')}")
+
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
 
@@ -844,33 +941,12 @@ VIEW_MAP = {
 }
 view_key = VIEW_MAP[view]
 
-# ----------------- ADMIN SIDEBAR -----------------
-st.sidebar.divider()
-st.sidebar.subheader(t("admin_sensitive"))
-if st.session_state.admin:
-    st.sidebar.success(t("admin_mode_on"))
-    if st.sidebar.button(t("disable_admin")):
-        st.session_state.admin = False
-        st.rerun()
-else:
-    with st.sidebar.form("admin_unlock_form", clear_on_submit=True):
-        admin_pw = st.text_input(
-            t("admin_password"),
-            type="password",
-            key=f"admin_pw_{st.session_state.admin_pw_key}",
-            placeholder=t("type_admin_pass"),
-        )
-        unlock = st.form_submit_button(t("unlock_admin"))
-    if unlock:
-        if admin_pw == ADMIN_PASSWORD:
-            st.session_state.admin = True
-        st.session_state.admin_pw_key += 1
-        st.rerun()
-
 st.sidebar.divider()
 if st.sidebar.button(t("logout")):
+    log_audit("LOGOUT", "session", None, f"user={current_user()}")
     st.session_state.authed = False
-    st.session_state.admin = False
+    st.session_state.user = None
+    st.session_state.role = None
     st.rerun()
 
 # ----------------- MAIN HEADER -----------------
@@ -1199,7 +1275,8 @@ try:
                     else:
                         st.error(t("room_occupied"))
 
-        if st.session_state.admin:
+        # Room management is admin-only
+        if is_admin():
             st.divider()
             st.subheader(t("room_management"))
 
@@ -1354,12 +1431,11 @@ try:
             st.rerun()
 
         st.divider()
-
         st.info(f"{t('latest_backup')}: {get_latest_backup_name()}")
 
-        if st.session_state.admin:
+        # Backups (admin only)
+        if is_admin():
             st.markdown("### Backups")
-
             latest = get_latest_backup_path()
             if latest:
                 st.caption(f"{t('last_backup')}: {os.path.basename(latest)}")
@@ -1371,6 +1447,7 @@ try:
                 if st.button(t("backup_now"), type="primary"):
                     path = create_backup(force=True)
                     if path:
+                        log_audit("BACKUP", "database", None, f"Created backup {os.path.basename(path)}")
                         st.success(t("backup_created"))
                         st.rerun()
 
@@ -1388,11 +1465,10 @@ try:
                 else:
                     st.button(t("download_latest_backup"), disabled=True, use_container_width=True)
 
-        st.divider()
-
-        if st.session_state.admin:
+            st.divider()
             st.markdown(f"### {t('db_mgmt')}")
 
+            # Clear all reservations confirmation flow
             if st.button(t("clear_all_res"), type="secondary"):
                 st.session_state.confirm_clear_all = True
 
@@ -1403,6 +1479,7 @@ try:
                     if st.button(t("confirm_action"), type="primary"):
                         with db() as conn:
                             conn.execute("DELETE FROM reservations;")
+                        log_audit("DELETE_ALL", "reservations", None, "Cleared all reservations")
                         st.session_state.confirm_clear_all = False
                         st.success("OK")
                         st.rerun()
@@ -1413,6 +1490,7 @@ try:
 
             st.divider()
 
+            # Reset rooms confirmation flow
             if st.button(t("reset_rooms"), type="secondary"):
                 st.session_state.confirm_reset_rooms = True
 
@@ -1425,6 +1503,7 @@ try:
                             conn.execute("DELETE FROM rooms;")
                             for num in default_room_numbers():
                                 conn.execute("INSERT OR IGNORE INTO rooms(number) VALUES (?);", (num,))
+                        log_audit("RESET", "rooms", None, "Reset rooms to defaults")
                         st.session_state.confirm_reset_rooms = False
                         st.success(t("rooms_reset"))
                         st.rerun()
@@ -1432,6 +1511,22 @@ try:
                     if st.button(t("cancel"), key="cancel_reset_rooms_btn"):
                         st.session_state.confirm_reset_rooms = False
                         st.rerun()
+
+            st.divider()
+            st.markdown(f"### {t('audit_log')}")
+            st.caption(t("audit_hint"))
+
+            audit_df = get_audit_log(limit=300)
+            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+
+            if st.button(t("audit_export")):
+                csv = audit_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=t("audit_download"),
+                    data=csv,
+                    file_name=f"audit_log_{date.today().isoformat()}.csv",
+                    mime="text/csv",
+                )
 
         st.divider()
         st.markdown("### About")
