@@ -1,15 +1,24 @@
 # Isla Verde Hotel Manager (single-file Streamlit app)
-# v4.0.0
-# CHANGES INCLUDED:
-# - ✅ User-friendly Room History search (quick access to a room’s reservation history)
-# - ✅ Tax field added (next to Tariff) in Register Guests + El Roll edit form
-# - ✅ Total auto-calculated (Tariff + Tax) * Nights, based on selected room
-# - ✅ Room prices (Tariff/Tax/Currency defaults) are ADMIN-only to view/change
-#   * Receptionists cannot view/edit room default prices
-#   * Receptionists cannot edit Tariff/Tax per reservation (it auto-fills from room defaults)
-#   * Admin can edit Tariff/Tax per reservation if needed
-# - ✅ Debug fixes (removed accidental `np =` assignment; improved error handling)
-# - ✅ DB migrations for new columns (rooms: default_tariff/default_tax/currency, reservations: tax)
+# v4.1.0
+#
+# NEW (User-friendly FX feature):
+# - ✅ All base prices are in USD (hotel system).
+# - ✅ Admin can set the CURRENT USD→CRC exchange rate (Settings + quick sidebar box).
+# - ✅ App automatically shows CRC equivalents everywhere (tariff, tax, totals) using the saved rate.
+# - ✅ When currency is CRC, displayed amounts are converted from stored USD at the current rate.
+#
+# Existing features kept/improved:
+# - Login (no Streamlit secrets required)
+# - Audit log
+# - Admin-only room management + room default prices
+# - Daily automatic backup + manual backups (admin)
+# - Room History (simple room selector)
+# - Tax field + Total auto-calculated
+# - Bug fixes + safer error handling
+#
+# IMPORTANT NOTE:
+# - DB stores tariff/tax as USD values (even if reservation currency is CRC).
+# - Currency controls DISPLAY/REPORTING currency only.
 
 import os
 import glob
@@ -26,7 +35,6 @@ import streamlit as st
 # ============================================================
 DB_PATH = "hotel.db"
 
-# USER ACCOUNTS
 USERS = {
     "receptionist a": {"password": "ISLA1", "role": "receptionist"},
     "receptionist b": {"password": "ISLA2", "role": "receptionist"},
@@ -42,16 +50,20 @@ STATUSES: List[Tuple[str, str]] = [
 STATUS_LABEL = {k: v for k, v in STATUSES}
 VALID_STATUSES = {k for k, _ in STATUSES}
 
-# Currency: USD / CRC only
+# Currency choices (DISPLAY)
 CURRENCIES = [("USD", "$"), ("CRC", "₡")]
 CURRENCY_SYMBOL = {code: sym for code, sym in CURRENCIES}
 DEFAULT_CURRENCY = "USD"
+
+# FX setting key (USD->CRC)
+FX_KEY = "fx_usd_crc"
+FX_DEFAULT = "0"  # user should set; if 0, CRC conversions show as "—"
 
 # Daily DB backups
 BACKUP_DIR = "backups"
 BACKUP_RETENTION_DAYS = 30
 
-APP_VERSION = "v4.0.0"
+APP_VERSION = "v4.1.0"
 
 # ============================================================
 # I18N
@@ -96,7 +108,6 @@ TEXT = {
         "saved": "Saved successfully!",
         "deleted": "Deleted successfully!",
         "search_placeholder": "Search reservations…",
-        "room_search_placeholder": "Type a room number…",
         "no_results": "No results found",
         "select_date": "Select a date",
         "checkin_date": "Check-in Date",
@@ -158,9 +169,19 @@ TEXT = {
         "audit_export": "Export audit log CSV",
         "audit_download": "Download audit CSV",
         "enter_username": "Enter username",
-        "room_history_hint": "Search a room number to see all its stays (latest first).",
+        "room_history_hint": "Pick a room number to see its reservation history (latest first).",
         "room_prices_admin_only": "Room default prices are admin-only.",
         "auto_filled_from_room": "Auto-filled from room defaults",
+        "exchange_rate": "Exchange Rate",
+        "fx_usd_to_crc": "USD → CRC (₡ per $1)",
+        "fx_saved": "Exchange rate saved.",
+        "fx_needed": "Set the exchange rate to show CRC amounts.",
+        "show_in_crc": "CRC preview",
+        "prices_in_usd": "Prices are stored in USD",
+        "fx_quick": "Quick exchange rate",
+        "save_fx": "Save rate",
+        "fx_current": "Current rate",
+        "fx_hint": "Enter today's rate so CRC values update instantly.",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -201,7 +222,6 @@ TEXT = {
         "saved": "¡Guardado exitosamente!",
         "deleted": "¡Borrado exitosamente!",
         "search_placeholder": "Buscar reservas…",
-        "room_search_placeholder": "Escribe un número de habitación…",
         "no_results": "No se encontraron resultados",
         "select_date": "Selecciona una fecha",
         "checkin_date": "Fecha de Entrada",
@@ -263,9 +283,19 @@ TEXT = {
         "audit_export": "Exportar auditoría a CSV",
         "audit_download": "Descargar auditoría CSV",
         "enter_username": "Ingrese usuario",
-        "room_history_hint": "Busca un número de habitación para ver todas sus estancias (lo más reciente primero).",
+        "room_history_hint": "Elige una habitación para ver su historial (lo más reciente primero).",
         "room_prices_admin_only": "Los precios por defecto de habitaciones son solo para admin.",
         "auto_filled_from_room": "Autollenado desde la habitación",
+        "exchange_rate": "Tipo de Cambio",
+        "fx_usd_to_crc": "USD → CRC (₡ por $1)",
+        "fx_saved": "Tipo de cambio guardado.",
+        "fx_needed": "Define el tipo de cambio para mostrar montos en colones.",
+        "show_in_crc": "Vista en CRC",
+        "prices_in_usd": "Los precios se guardan en USD",
+        "fx_quick": "Tipo de cambio rápido",
+        "save_fx": "Guardar tipo de cambio",
+        "fx_current": "Tipo de cambio actual",
+        "fx_hint": "Ingresa el tipo de cambio de hoy para actualizar colones al instante.",
     },
 }
 
@@ -279,7 +309,6 @@ def t(key: str) -> str:
 # HELPERS
 # ============================================================
 def now_utc() -> str:
-    # Add "Z" to indicate UTC explicitly
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
@@ -314,15 +343,9 @@ def fmt_money(amount: float, currency: str) -> str:
     currency = _normalize_currency(currency)
     sym = CURRENCY_SYMBOL.get(currency, "")
     try:
-        return f"{sym}{float(amount):.2f}"
+        return f"{sym}{float(amount):,.2f}"
     except Exception:
         return f"{sym}{amount}"
-
-
-def status_display(db_status: str) -> str:
-    if db_status == "available":
-        return t("available")
-    return STATUS_LABEL.get(db_status, db_status)
 
 
 def current_user() -> str:
@@ -337,15 +360,28 @@ def is_admin() -> bool:
     return st.session_state.get("role") == "admin"
 
 
-def calc_total(tariff: float, tax: float, nn: int) -> float:
+def status_display(db_status: str) -> str:
+    if db_status == "available":
+        return t("available")
+    return STATUS_LABEL.get(db_status, db_status)
+
+
+def safe_float(x, default: float = 0.0) -> float:
     try:
-        return max(0.0, (float(tariff) + float(tax)) * int(nn))
+        return float(x)
+    except Exception:
+        return default
+
+
+def calc_total_usd(tariff_usd: float, tax_usd: float, nn: int) -> float:
+    try:
+        return max(0.0, (float(tariff_usd) + float(tax_usd)) * int(nn))
     except Exception:
         return 0.0
 
 
 # ============================================================
-# DB (safer for Streamlit reruns + less locking)
+# DB
 # ============================================================
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -390,19 +426,20 @@ def ensure_column(conn: sqlite3.Connection, table: str, col_def_sql: str, col_na
 
 def init_db():
     with db() as conn:
-        # Rooms now include default price info (admin-only UI)
+        # Rooms include default USD pricing
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS rooms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 number TEXT NOT NULL UNIQUE,
-                default_tariff REAL DEFAULT 0,
-                default_tax REAL DEFAULT 0,
-                currency TEXT DEFAULT "{DEFAULT_CURRENCY}"
+                default_tariff REAL DEFAULT 0,   -- USD
+                default_tax REAL DEFAULT 0,      -- USD
+                currency TEXT DEFAULT "{DEFAULT_CURRENCY}"  -- display preference default
             );
             """
         )
 
+        # Reservations store USD amounts (tariff/tax), regardless of display currency
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS reservations (
@@ -414,9 +451,9 @@ def init_db():
                 check_out TEXT NOT NULL,
                 notes TEXT DEFAULT "",
                 num_guests INTEGER DEFAULT 1,
-                tariff REAL DEFAULT 0,
-                tax REAL DEFAULT 0,
-                currency TEXT DEFAULT "{DEFAULT_CURRENCY}",
+                tariff REAL DEFAULT 0,   -- USD
+                tax REAL DEFAULT 0,      -- USD
+                currency TEXT DEFAULT "{DEFAULT_CURRENCY}", -- DISPLAY currency (USD/CRC)
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
@@ -448,7 +485,7 @@ def init_db():
             """
         )
 
-        # migrations (for old DBs)
+        # migrations for older DBs
         ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
         ensure_column(conn, "reservations", "tax REAL DEFAULT 0", "tax")
         ensure_column(conn, "reservations", f'currency TEXT DEFAULT "{DEFAULT_CURRENCY}"', "currency")
@@ -469,7 +506,7 @@ def set_setting(key: str, value: str):
         conn.execute(
             "INSERT INTO settings(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
-            (key, value),
+            (key, str(value)),
         )
 
 
@@ -506,7 +543,7 @@ def log_audit(action: str, entity: str, entity_id: Optional[int] = None, details
 
 
 # ============================================================
-# BACKUPS (safe temp -> atomic rename)
+# BACKUPS
 # ============================================================
 def ensure_backup_dir():
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -582,6 +619,32 @@ def daily_backup_once(day_iso: str) -> str:
 
 
 # ============================================================
+# FX: USD -> CRC
+# ============================================================
+def get_fx_usd_to_crc() -> float:
+    # Cached in session for convenience; always sourced from settings
+    v = get_setting(FX_KEY, FX_DEFAULT)
+    fx = safe_float(v, 0.0)
+    return max(0.0, fx)
+
+
+def usd_to_crc(usd: float, fx: float) -> Optional[float]:
+    if fx <= 0:
+        return None
+    return float(usd) * float(fx)
+
+
+def display_amount_from_usd(amount_usd: float, display_currency: str, fx: float) -> str:
+    cur = _normalize_currency(display_currency)
+    if cur == "USD":
+        return fmt_money(amount_usd, "USD")
+    if cur == "CRC":
+        crc = usd_to_crc(amount_usd, fx)
+        return fmt_money(crc, "CRC") if crc is not None else "—"
+    return fmt_money(amount_usd, "USD")
+
+
+# ============================================================
 # DATA FUNCTIONS
 # ============================================================
 def get_rooms() -> List[sqlite3.Row]:
@@ -602,14 +665,19 @@ def get_room_by_number(room_number: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def update_room_defaults(room_id: int, default_tariff: float, default_tax: float, currency: str):
+def update_room_defaults(room_id: int, default_tariff_usd: float, default_tax_usd: float, currency: str):
     currency = _normalize_currency(currency)
     with db() as conn:
         conn.execute(
             "UPDATE rooms SET default_tariff=?, default_tax=?, currency=? WHERE id=?;",
-            (float(default_tariff), float(default_tax), currency, int(room_id)),
+            (float(default_tariff_usd), float(default_tax_usd), currency, int(room_id)),
         )
-    log_audit("UPDATE", "room", int(room_id), f"Updated room defaults: tariff={default_tariff}, tax={default_tax}, currency={currency}")
+    log_audit(
+        "UPDATE",
+        "room",
+        int(room_id),
+        f"Updated room defaults (USD): tariff={float(default_tariff_usd):.2f}, tax={float(default_tax_usd):.2f}, display_currency={currency}",
+    )
 
 
 def add_room(num: str):
@@ -637,7 +705,8 @@ def get_reservations_for_date(selected_date: date) -> List[sqlite3.Row]:
     with db() as conn:
         return conn.execute(
             """
-            SELECT r.id, rm.number AS room_number, r.guest_name, r.num_guests, r.tariff, r.tax, r.currency,
+            SELECT r.id, rm.number AS room_number, r.guest_name, r.num_guests,
+                   r.tariff, r.tax, r.currency,
                    r.notes, r.status, r.check_in, r.check_out
             FROM reservations r
             JOIN rooms rm ON r.room_id = rm.id
@@ -659,9 +728,9 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
             "id": int(res["id"]),
             "guest_name": res["guest_name"] or "",
             "num_guests": int(res["num_guests"] or 0),
-            "tariff": float(res["tariff"] or 0.0),
-            "tax": float(res["tax"] or 0.0),
-            "currency": _normalize_currency(res["currency"] or DEFAULT_CURRENCY),
+            "tariff_usd": float(res["tariff"] or 0.0),
+            "tax_usd": float(res["tax"] or 0.0),
+            "display_currency": _normalize_currency(res["currency"] or DEFAULT_CURRENCY),
             "notes": res["notes"] or "",
             "status": res["status"],
             "check_in": parse_iso(res["check_in"]),
@@ -678,9 +747,9 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
                     "room_number": room_number,
                     "guest_name": res["guest_name"],
                     "num_guests": res["num_guests"],
-                    "tariff": res["tariff"],
-                    "tax": res["tax"],
-                    "currency": res["currency"],
+                    "tariff_usd": res["tariff_usd"],
+                    "tax_usd": res["tax_usd"],
+                    "display_currency": res["display_currency"],
                     "notes": res["notes"],
                     "status": res["status"],
                     "reservation_id": res["id"],
@@ -695,9 +764,9 @@ def get_all_rooms_with_status(selected_date: date) -> List[Dict]:
                     "room_number": room_number,
                     "guest_name": "",
                     "num_guests": 0,
-                    "tariff": 0.0,
-                    "tax": 0.0,
-                    "currency": DEFAULT_CURRENCY,
+                    "tariff_usd": 0.0,
+                    "tax_usd": 0.0,
+                    "display_currency": DEFAULT_CURRENCY,
                     "notes": "",
                     "status": "available",
                     "reservation_id": None,
@@ -729,16 +798,16 @@ def save_reservation(
     check_in: date,
     check_out: date,
     num_guests: int,
-    tariff: float,
-    tax: float,
-    currency: str,
+    tariff_usd: float,
+    tax_usd: float,
+    display_currency: str,
     notes: str,
     status: str,
     reservation_id: Optional[int] = None,
 ) -> bool:
     room_number = str(room_number).strip()
     guest_name = normalize_guest_name(guest_name)
-    currency = _normalize_currency(currency)
+    display_currency = _normalize_currency(display_currency)
     status = status if status in VALID_STATUSES else "reserved"
 
     if not room_number or not guest_name:
@@ -799,9 +868,9 @@ def save_reservation(
                     iso(check_out),
                     notes or "",
                     int(num_guests),
-                    float(tariff),
-                    float(tax),
-                    currency,
+                    float(tariff_usd),
+                    float(tax_usd),
+                    display_currency,
                     tstamp,
                     int(reservation_id),
                 ),
@@ -823,9 +892,9 @@ def save_reservation(
                     iso(check_out),
                     notes or "",
                     int(num_guests),
-                    float(tariff),
-                    float(tax),
-                    currency,
+                    float(tariff_usd),
+                    float(tax_usd),
+                    display_currency,
                     tstamp,
                     tstamp,
                 ),
@@ -834,13 +903,14 @@ def save_reservation(
             action = "CREATE"
 
     nn = nights(check_in, check_out)
-    total_amt = calc_total(float(tariff), float(tax), nn)
+    total_usd = calc_total_usd(float(tariff_usd), float(tax_usd), nn)
     log_audit(
         action,
         "reservation",
         rid,
         f"room={room_number}; name={guest_name}; status={status}; ci={iso(check_in)}; co={iso(check_out)}; "
-        f"pax={int(num_guests)}; tariff={float(tariff)}; tax={float(tax)}; nights={nn}; total={total_amt} {currency}",
+        f"pax={int(num_guests)}; tariff_usd={float(tariff_usd):.2f}; tax_usd={float(tax_usd):.2f}; "
+        f"nights={nn}; total_usd={total_usd:.2f}; display_currency={display_currency}",
     )
     return True
 
@@ -1000,11 +1070,7 @@ if not st.session_state.authed:
     st.title(t("app_title"))
     st.caption(t("enter_login"))
 
-    username = st.text_input(
-        t("username"),
-        value="",
-        placeholder=t("enter_username"),
-    )
+    username = st.text_input(t("username"), value="", placeholder=t("enter_username"))
     pw = st.text_input(t("password"), type="password")
 
     if st.button(t("log_in")):
@@ -1024,6 +1090,28 @@ if not st.session_state.authed:
 st.sidebar.title(t("menu"))
 st.sidebar.caption(f"**{t('logged_in_as')}**: {current_user()}")
 st.sidebar.caption(f"**{t('role')}**: {current_role()}")
+
+# FX quick box (user-friendly)
+fx_current = get_fx_usd_to_crc()
+with st.sidebar.expander("💱 " + t("fx_quick"), expanded=False):
+    st.caption(t("fx_hint"))
+    if is_admin():
+        fx_new = st.number_input(
+            t("fx_usd_to_crc"),
+            min_value=0.0,
+            value=float(fx_current),
+            step=1.0,
+            format="%.2f",
+            help=t("fx_hint"),
+            key="fx_sidebar_input",
+        )
+        if st.button("💾 " + t("save_fx"), key="save_fx_sidebar", use_container_width=True):
+            set_setting(FX_KEY, str(float(fx_new)))
+            log_audit("UPDATE", "settings", None, f"Set {FX_KEY}={float(fx_new):.2f}")
+            st.success(t("fx_saved"))
+            st.rerun()
+    else:
+        st.info(f"{t('fx_current')}: {fx_current:.2f}" if fx_current > 0 else t("fx_needed"))
 
 view_options = [t("el_roll"), t("register_guests"), t("search_guests"), t("room_history"), t("settings")]
 view = st.sidebar.radio(t("go_to"), view_options, index=0)
@@ -1048,6 +1136,12 @@ if st.sidebar.button(t("logout")):
 # ----------------- MAIN HEADER -----------------
 st.title(t("app_title"))
 show_register_popup_if_needed()
+
+fx = get_fx_usd_to_crc()
+if fx <= 0:
+    st.info("💱 " + t("fx_needed"))
+else:
+    st.caption(f"💱 {t('fx_current')}: {fx:,.2f}  ({t('fx_usd_to_crc')})")
 
 # ============================================================
 # VIEWS
@@ -1117,13 +1211,12 @@ try:
             tax_text = ""
             total_text = ""
             if r["occupied"]:
-                curr = r.get("currency", DEFAULT_CURRENCY)
+                cur = r.get("display_currency", DEFAULT_CURRENCY)
                 nn = nights(r["check_in"], r["check_out"]) if r.get("check_in") and r.get("check_out") else 0
-                if float(r["tariff"] or 0) > 0:
-                    tariff_text = fmt_money(float(r["tariff"]), curr)
-                if float(r["tax"] or 0) > 0:
-                    tax_text = fmt_money(float(r["tax"]), curr)
-                total_text = fmt_money(calc_total(float(r["tariff"] or 0), float(r["tax"] or 0), nn), curr) if nn > 0 else "—"
+                tariff_text = display_amount_from_usd(float(r["tariff_usd"] or 0.0), cur, fx)
+                tax_text = display_amount_from_usd(float(r["tax_usd"] or 0.0), cur, fx)
+                total_usd = calc_total_usd(float(r["tariff_usd"] or 0.0), float(r["tax_usd"] or 0.0), nn)
+                total_text = display_amount_from_usd(total_usd, cur, fx) if nn > 0 else "—"
 
             rows.append(
                 {
@@ -1200,7 +1293,6 @@ try:
                         mime="text/csv",
                     )
 
-            # Inline edit panel
             if st.session_state.elroll_selected_res_id is not None:
                 reservation_data = get_reservation(int(st.session_state.elroll_selected_res_id))
                 if reservation_data:
@@ -1212,9 +1304,9 @@ try:
                     check_out_s = reservation_data["check_out"]
                     notes = reservation_data["notes"] or ""
                     num_guests = int(reservation_data["num_guests"] or 1)
-                    tariff = float(reservation_data["tariff"] or 0.0)
-                    tax_amt = float(reservation_data["tax"] or 0.0)
-                    currency = _normalize_currency(reservation_data["currency"] or DEFAULT_CURRENCY)
+                    tariff_usd = float(reservation_data["tariff"] or 0.0)
+                    tax_usd = float(reservation_data["tax"] or 0.0)
+                    display_currency = _normalize_currency(reservation_data["currency"] or DEFAULT_CURRENCY)
 
                     st.divider()
                     st.subheader(t("edit_from_elroll"))
@@ -1236,7 +1328,6 @@ try:
                         nn = nights(check_in_new, check_out_new)
                         st.caption(f"{t('num_nights')}: {nn}")
 
-                        # Pull defaults from selected room
                         room_row = get_room_by_number(room_number_new)
                         room_default_tariff = float(room_row["default_tariff"] or 0.0) if room_row else 0.0
                         room_default_tax = float(room_row["default_tax"] or 0.0) if room_row else 0.0
@@ -1246,22 +1337,20 @@ try:
                         with e1:
                             pax_new = st.number_input(t("pax"), min_value=1, max_value=20, value=int(num_guests))
 
-                        # PRICE FIELDS:
-                        # - admin: editable (can override per reservation)
-                        # - receptionist: locked to room defaults (cannot access/change prices)
                         with e2:
                             if is_admin():
-                                tariff_new = st.number_input(
-                                    t("tariff"),
+                                tariff_new_usd = st.number_input(
+                                    f"{t('tariff')} (USD)",
                                     min_value=0.0,
-                                    value=float(tariff),
+                                    value=float(tariff_usd),
                                     step=10.0,
                                     format="%.2f",
+                                    help=t("prices_in_usd"),
                                 )
                             else:
-                                tariff_new = float(room_default_tariff)
+                                tariff_new_usd = float(room_default_tariff)
                                 st.number_input(
-                                    t("tariff"),
+                                    f"{t('tariff')} (USD)",
                                     min_value=0.0,
                                     value=float(room_default_tariff),
                                     step=10.0,
@@ -1272,17 +1361,18 @@ try:
 
                         with e3:
                             if is_admin():
-                                tax_new = st.number_input(
-                                    t("tax"),
+                                tax_new_usd = st.number_input(
+                                    f"{t('tax')} (USD)",
                                     min_value=0.0,
-                                    value=float(tax_amt),
+                                    value=float(tax_usd),
                                     step=1.0,
                                     format="%.2f",
+                                    help=t("prices_in_usd"),
                                 )
                             else:
-                                tax_new = float(room_default_tax)
+                                tax_new_usd = float(room_default_tax)
                                 st.number_input(
-                                    t("tax"),
+                                    f"{t('tax')} (USD)",
                                     min_value=0.0,
                                     value=float(room_default_tax),
                                     step=1.0,
@@ -1295,26 +1385,32 @@ try:
                             currency_labels = {"USD": t("dollars"), "CRC": t("colones")}
                             currency_options = ["USD", "CRC"]
                             if is_admin():
-                                cidx = currency_options.index(currency) if currency in currency_options else 0
-                                currency_new = st.selectbox(
+                                cidx = currency_options.index(display_currency) if display_currency in currency_options else 0
+                                display_currency_new = st.selectbox(
                                     t("currency"),
                                     currency_options,
                                     index=cidx,
                                     format_func=lambda x: currency_labels.get(x, x),
                                 )
                             else:
-                                currency_new = room_default_currency
+                                display_currency_new = room_default_currency
                                 st.selectbox(
                                     t("currency"),
                                     currency_options,
-                                    index=currency_options.index(currency_new) if currency_new in currency_options else 0,
+                                    index=currency_options.index(display_currency_new) if display_currency_new in currency_options else 0,
                                     format_func=lambda x: currency_labels.get(x, x),
                                     disabled=True,
                                     help=t("auto_filled_from_room"),
                                 )
 
-                        total_amt = calc_total(float(tariff_new), float(tax_new), nn)
-                        st.metric(t("total"), fmt_money(total_amt, currency_new))
+                        # Friendly preview: show USD and CRC totals
+                        total_usd = calc_total_usd(float(tariff_new_usd), float(tax_new_usd), nn)
+                        p1, p2 = st.columns(2)
+                        with p1:
+                            st.metric(f"{t('total')} (USD)", fmt_money(total_usd, "USD"))
+                        with p2:
+                            total_crc = usd_to_crc(total_usd, fx)
+                            st.metric(f"{t('total')} (CRC)", fmt_money(total_crc, "CRC") if total_crc is not None else "—")
 
                         status_options = [s[0] for s in STATUSES]
                         status_idx = status_options.index(status) if status in status_options else 0
@@ -1346,11 +1442,10 @@ try:
                             elif check_out_new <= check_in_new:
                                 st.error(t("date_range_error"))
                             else:
-                                # Receptionist always uses room defaults
                                 if not is_admin():
-                                    tariff_new = float(room_default_tariff)
-                                    tax_new = float(room_default_tax)
-                                    currency_new = room_default_currency
+                                    tariff_new_usd = float(room_default_tariff)
+                                    tax_new_usd = float(room_default_tax)
+                                    display_currency_new = room_default_currency
 
                                 ok = save_reservation(
                                     room_number=room_number_new,
@@ -1358,9 +1453,9 @@ try:
                                     check_in=check_in_new,
                                     check_out=check_out_new,
                                     num_guests=int(pax_new),
-                                    tariff=float(tariff_new),
-                                    tax=float(tax_new),
-                                    currency=currency_new,
+                                    tariff_usd=float(tariff_new_usd),
+                                    tax_usd=float(tax_new_usd),
+                                    display_currency=display_currency_new,
                                     notes=notes_new,
                                     status=status_new,
                                     reservation_id=int(res_id),
@@ -1412,23 +1507,29 @@ try:
             nn = nights(check_in, check_out)
             st.caption(f"{t('num_nights')}: {nn}")
 
-            col3, col4, col5, col6 = st.columns([1, 1, 1, 1])
-            with col3:
-                num_guests = st.number_input(t("pax"), min_value=1, max_value=20, value=1)
-
-            # Pull room defaults
             room_row = get_room_by_number(room_number)
             room_default_tariff = float(room_row["default_tariff"] or 0.0) if room_row else 0.0
             room_default_tax = float(room_row["default_tax"] or 0.0) if room_row else 0.0
             room_default_currency = _normalize_currency(room_row["currency"] or DEFAULT_CURRENCY) if room_row else DEFAULT_CURRENCY
 
+            col3, col4, col5, col6 = st.columns([1, 1, 1, 1])
+            with col3:
+                num_guests = st.number_input(t("pax"), min_value=1, max_value=20, value=1)
+
             with col4:
                 if is_admin():
-                    tariff = st.number_input(t("tariff"), min_value=0.0, value=float(room_default_tariff), step=10.0, format="%.2f")
+                    tariff_usd = st.number_input(
+                        f"{t('tariff')} (USD)",
+                        min_value=0.0,
+                        value=float(room_default_tariff),
+                        step=10.0,
+                        format="%.2f",
+                        help=t("prices_in_usd"),
+                    )
                 else:
-                    tariff = float(room_default_tariff)
+                    tariff_usd = float(room_default_tariff)
                     st.number_input(
-                        t("tariff"),
+                        f"{t('tariff')} (USD)",
                         min_value=0.0,
                         value=float(room_default_tariff),
                         step=10.0,
@@ -1439,11 +1540,18 @@ try:
 
             with col5:
                 if is_admin():
-                    tax_amt = st.number_input(t("tax"), min_value=0.0, value=float(room_default_tax), step=1.0, format="%.2f")
+                    tax_usd = st.number_input(
+                        f"{t('tax')} (USD)",
+                        min_value=0.0,
+                        value=float(room_default_tax),
+                        step=1.0,
+                        format="%.2f",
+                        help=t("prices_in_usd"),
+                    )
                 else:
-                    tax_amt = float(room_default_tax)
+                    tax_usd = float(room_default_tax)
                     st.number_input(
-                        t("tax"),
+                        f"{t('tax')} (USD)",
                         min_value=0.0,
                         value=float(room_default_tax),
                         step=1.0,
@@ -1456,25 +1564,30 @@ try:
                 currency_labels = {"USD": t("dollars"), "CRC": t("colones")}
                 currency_options = ["USD", "CRC"]
                 if is_admin():
-                    currency = st.selectbox(
+                    display_currency = st.selectbox(
                         t("currency"),
                         currency_options,
                         index=currency_options.index(room_default_currency) if room_default_currency in currency_options else 0,
                         format_func=lambda x: currency_labels.get(x, x),
                     )
                 else:
-                    currency = room_default_currency
+                    display_currency = room_default_currency
                     st.selectbox(
                         t("currency"),
                         currency_options,
-                        index=currency_options.index(currency) if currency in currency_options else 0,
+                        index=currency_options.index(display_currency) if display_currency in currency_options else 0,
                         format_func=lambda x: currency_labels.get(x, x),
                         disabled=True,
                         help=t("room_prices_admin_only"),
                     )
 
-            total_amt = calc_total(float(tariff), float(tax_amt), nn)
-            st.metric(t("total"), fmt_money(total_amt, currency))
+            total_usd = calc_total_usd(float(tariff_usd), float(tax_usd), nn)
+            p1, p2 = st.columns(2)
+            with p1:
+                st.metric(f"{t('total')} (USD)", fmt_money(total_usd, "USD"))
+            with p2:
+                total_crc = usd_to_crc(total_usd, fx)
+                st.metric(f"{t('total')} (CRC)", fmt_money(total_crc, "CRC") if total_crc is not None else "—")
 
             status_options = [s[0] for s in STATUSES]
             status = st.selectbox(t("status"), status_options, index=0, format_func=lambda x: STATUS_LABEL.get(x, x))
@@ -1488,11 +1601,10 @@ try:
                 elif check_out <= check_in:
                     st.error(t("date_range_error"))
                 else:
-                    # Receptionist always uses room defaults (cannot change prices)
                     if not is_admin():
-                        tariff = float(room_default_tariff)
-                        tax_amt = float(room_default_tax)
-                        currency = room_default_currency
+                        tariff_usd = float(room_default_tariff)
+                        tax_usd = float(room_default_tax)
+                        display_currency = room_default_currency
 
                     ok = save_reservation(
                         room_number=room_number,
@@ -1500,9 +1612,9 @@ try:
                         check_in=check_in,
                         check_out=check_out,
                         num_guests=int(num_guests),
-                        tariff=float(tariff),
-                        tax=float(tax_amt),
-                        currency=currency,
+                        tariff_usd=float(tariff_usd),
+                        tax_usd=float(tax_usd),
+                        display_currency=display_currency,
                         notes=notes,
                         status=status,
                     )
@@ -1512,7 +1624,6 @@ try:
                     else:
                         st.error(t("room_occupied"))
 
-        # ADMIN: room management + room default prices
         if is_admin():
             st.divider()
             st.subheader(t("room_management"))
@@ -1534,16 +1645,22 @@ try:
 
             rooms = get_rooms()
             if rooms:
-                st.markdown("#### Room Default Prices (Admin)")
+                st.markdown("#### Room Default Prices (Admin) — stored in USD")
                 room_rows = []
                 for r in rooms:
                     room_rows.append(
                         {
                             "id": int(r["id"]),
                             "room": str(r["number"]),
-                            "default_tariff": float(r["default_tariff"] or 0.0),
-                            "default_tax": float(r["default_tax"] or 0.0),
-                            "currency": _normalize_currency(r["currency"] or DEFAULT_CURRENCY),
+                            "default_tariff_usd": float(r["default_tariff"] or 0.0),
+                            "default_tax_usd": float(r["default_tax"] or 0.0),
+                            "display_currency": _normalize_currency(r["currency"] or DEFAULT_CURRENCY),
+                            "tariff_crc_preview": fmt_money(usd_to_crc(float(r["default_tariff"] or 0.0), fx), "CRC")
+                            if fx > 0
+                            else "—",
+                            "tax_crc_preview": fmt_money(usd_to_crc(float(r["default_tax"] or 0.0), fx), "CRC")
+                            if fx > 0
+                            else "—",
                         }
                     )
                 rdf = pd.DataFrame(room_rows)
@@ -1555,22 +1672,23 @@ try:
                     column_config={
                         "id": st.column_config.NumberColumn(disabled=True, width="small"),
                         "room": st.column_config.TextColumn(disabled=True, width="small"),
-                        "default_tariff": st.column_config.NumberColumn(width="small"),
-                        "default_tax": st.column_config.NumberColumn(width="small"),
-                        "currency": st.column_config.SelectboxColumn(options=["USD", "CRC"], width="small"),
+                        "default_tariff_usd": st.column_config.NumberColumn(width="small"),
+                        "default_tax_usd": st.column_config.NumberColumn(width="small"),
+                        "display_currency": st.column_config.SelectboxColumn(options=["USD", "CRC"], width="small"),
+                        "tariff_crc_preview": st.column_config.TextColumn(disabled=True, width="small"),
+                        "tax_crc_preview": st.column_config.TextColumn(disabled=True, width="small"),
                     },
-                    disabled=["id", "room"],
+                    disabled=["id", "room", "tariff_crc_preview", "tax_crc_preview"],
                     key="room_defaults_editor",
                 )
 
                 if st.button("💾 Save room default prices", type="primary"):
-                    # Apply updates row-by-row
                     for _, row in edited.iterrows():
                         update_room_defaults(
                             room_id=int(row["id"]),
-                            default_tariff=float(row["default_tariff"] or 0.0),
-                            default_tax=float(row["default_tax"] or 0.0),
-                            currency=str(row["currency"] or DEFAULT_CURRENCY),
+                            default_tariff_usd=float(row["default_tariff_usd"] or 0.0),
+                            default_tax_usd=float(row["default_tax_usd"] or 0.0),
+                            currency=str(row["display_currency"] or DEFAULT_CURRENCY),
                         )
                     st.success("Saved.")
                     st.rerun()
@@ -1588,7 +1706,6 @@ try:
                             delete_room(room_id)
                             st.success(t("room_deleted"))
                             st.rerun()
-
         else:
             st.info(t("room_prices_admin_only"))
 
@@ -1641,31 +1758,35 @@ try:
                     check_out_str = res["check_out"]
                     notes = res["notes"] or ""
                     num_guests = int(res["num_guests"] or 0)
-                    tariff = float(res["tariff"] or 0.0)
-                    tax_amt = float(res["tax"] or 0.0)
-                    currency = _normalize_currency(res["currency"] or DEFAULT_CURRENCY)
+                    tariff_usd = float(res["tariff"] or 0.0)
+                    tax_usd = float(res["tax"] or 0.0)
+                    cur = _normalize_currency(res["currency"] or DEFAULT_CURRENCY)
                     updated_at = res["updated_at"] or ""
 
-                    check_in = parse_iso(check_in_str)
-                    check_out = parse_iso(check_out_str)
-                    nn = nights(check_in, check_out)
+                    ci = parse_iso(check_in_str)
+                    co = parse_iso(check_out_str)
+                    nn = nights(ci, co)
                     total_nights += nn
-                    stay_total = calc_total(tariff, tax_amt, nn)
-                    totals_by_currency[currency] = totals_by_currency.get(currency, 0.0) + stay_total
+
+                    total_usd = calc_total_usd(tariff_usd, tax_usd, nn)
+                    total_disp = total_usd if cur == "USD" else (usd_to_crc(total_usd, fx) or 0.0)
+
+                    totals_by_currency[cur] = totals_by_currency.get(cur, 0.0) + float(total_disp)
 
                     table_data.append(
                         {
                             "Room": room_number,
-                            "Check-in": check_in,
-                            "Check-out": check_out,
+                            "Check-in": ci,
+                            "Check-out": co,
                             "Nights": nn,
                             "PAX": num_guests,
-                            "Tariff": fmt_money(tariff, currency),
-                            "Tax": fmt_money(tax_amt, currency),
-                            "Total": fmt_money(stay_total, currency),
+                            "Tariff": display_amount_from_usd(tariff_usd, cur, fx),
+                            "Tax": display_amount_from_usd(tax_usd, cur, fx),
+                            "Total": display_amount_from_usd(total_usd, cur, fx),
                             "Status": STATUS_LABEL.get(status, status),
                             "Notes": notes,
                             "Updated": updated_at,
+                            "Stored (USD)": fmt_money(total_usd, "USD"),
                         }
                     )
 
@@ -1703,7 +1824,6 @@ try:
         rooms = get_rooms()
         room_numbers = [str(r["number"]) for r in rooms]
 
-        # Simple: pick a room (fastest UX)
         sel = st.selectbox(t("room"), [""] + room_numbers, index=0)
         if sel:
             st.session_state.room_history_selected = sel
@@ -1722,15 +1842,17 @@ try:
                 total_nights = 0
 
                 for r in res:
-                    tariff = float(r["tariff"] or 0.0)
-                    tax_amt = float(r["tax"] or 0.0)
-                    currency = _normalize_currency(r["currency"] or DEFAULT_CURRENCY)
+                    tariff_usd = float(r["tariff"] or 0.0)
+                    tax_usd = float(r["tax"] or 0.0)
+                    cur = _normalize_currency(r["currency"] or DEFAULT_CURRENCY)
                     ci = parse_iso(r["check_in"])
                     co = parse_iso(r["check_out"])
                     nn = nights(ci, co)
                     total_nights += nn
-                    total_amt = calc_total(tariff, tax_amt, nn)
-                    totals_by_currency[currency] = totals_by_currency.get(currency, 0.0) + total_amt
+
+                    total_usd = calc_total_usd(tariff_usd, tax_usd, nn)
+                    total_disp = total_usd if cur == "USD" else (usd_to_crc(total_usd, fx) or 0.0)
+                    totals_by_currency[cur] = totals_by_currency.get(cur, 0.0) + float(total_disp)
 
                     table_data.append(
                         {
@@ -1741,11 +1863,12 @@ try:
                             "Nights": nn,
                             "PAX": int(r["num_guests"] or 0),
                             "Status": STATUS_LABEL.get(str(r["status"]), str(r["status"])),
-                            "Tariff": fmt_money(tariff, currency),
-                            "Tax": fmt_money(tax_amt, currency),
-                            "Total": fmt_money(total_amt, currency),
+                            "Tariff": display_amount_from_usd(tariff_usd, cur, fx),
+                            "Tax": display_amount_from_usd(tax_usd, cur, fx),
+                            "Total": display_amount_from_usd(total_usd, cur, fx),
                             "Notes": str(r["notes"] or ""),
                             "Updated": str(r["updated_at"] or ""),
+                            "Stored (USD)": fmt_money(total_usd, "USD"),
                         }
                     )
 
@@ -1791,6 +1914,28 @@ try:
             set_setting("lang", lang_choice)
             st.success(t("lang_saved"))
             st.rerun()
+
+        st.divider()
+        st.markdown(f"### 💱 {t('exchange_rate')}")
+        st.caption(t("fx_hint"))
+
+        if is_admin():
+            fx_val = get_fx_usd_to_crc()
+            fx_edit = st.number_input(
+                t("fx_usd_to_crc"),
+                min_value=0.0,
+                value=float(fx_val),
+                step=1.0,
+                format="%.2f",
+                key="fx_settings_input",
+            )
+            if st.button("💾 " + t("save_fx"), type="primary"):
+                set_setting(FX_KEY, str(float(fx_edit)))
+                log_audit("UPDATE", "settings", None, f"Set {FX_KEY}={float(fx_edit):.2f}")
+                st.success(t("fx_saved"))
+                st.rerun()
+        else:
+            st.info(f"{t('fx_current')}: {get_fx_usd_to_crc():.2f}" if get_fx_usd_to_crc() > 0 else t("fx_needed"))
 
         st.divider()
         st.info(f"{t('latest_backup')}: {get_latest_backup_name()}")
@@ -1896,10 +2041,9 @@ try:
         st.write("El Roll System")
         st.caption("© 2024 Hotel Isla Verde")
 
-except Exception:
-    # Don’t leak full exception details to non-admin users
+except Exception as e:
     if is_admin():
-        st.exception(Exception("Unhandled error"))  # keeps stack in admin view
+        st.exception(e)
     else:
         st.error(t("unexpected_error"))
     st.stop()
