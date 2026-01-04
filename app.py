@@ -1,23 +1,22 @@
 # Isla Verde Hotel Manager (single-file Streamlit app)
-# v4.3.0
+# v4.4.0
 #
-# CHANGES (requested):
-# ✅ REMOVED: Exchange rate boxes/features from everywhere else.
-# ✅ ADDED: A NEW section (view) "CRC Calculator" that:
-#    - Lets anyone calculate room price in colones (CRC) using an exchange rate
-#    - Saves the exchange rate FOR TODAY only
-#    - Automatically "resets" tomorrow (because tomorrow has no saved rate yet)
-#
-# Still included from your earlier requests:
-# ✅ Room History search (simple): select room -> see history + export
+# INCLUDED MODIFICATIONS:
+# ✅ Room History (simple): pick room -> see its full reservation history + export CSV
 # ✅ Tax field next to Tariff (Register Guests + El Roll editor)
-# ✅ Total calculation (tariff + tax) * nights (stored/used in USD)
-# ✅ Only admins can change room default prices (tariff/tax defaults in USD)
+# ✅ Total calculation (Tariff + Tax) * Nights (stored in USD)
+# ✅ Room default prices (Tariff/Tax in USD) are ADMIN-ONLY to view/change
 # ✅ Non-admins cannot edit prices; prices auto-fill from room defaults
+# ✅ CRC Calculator (simplified, user-friendly):
+#    - One box to enter "Today's exchange rate" (₡ per $1) + Save
+#    - Pick Room + Dates -> shows ONE big number: "Total in CRC"
+#    - Optional details expander
+# ✅ Daily exchange rate is saved ONLY for that day; tomorrow it will be empty again
 #
-# NOTE:
-# - Reservations & room prices are stored in USD.
-# - The CRC Calculator is separate and does not change stored USD data.
+# FIXES / DEBUG:
+# ✅ Removed accidental "np =" variable / no numpy needed
+# ✅ Safer parsing & formatting
+# ✅ Better exception handling for admins vs non-admins
 
 import os
 import glob
@@ -49,16 +48,13 @@ STATUSES: List[Tuple[str, str]] = [
 STATUS_LABEL = {k: v for k, v in STATUSES}
 VALID_STATUSES = {k for k, _ in STATUSES}
 
-# Display currency choices (kept for compatibility; stored prices are USD)
 CURRENCIES = [("USD", "$"), ("CRC", "₡")]
 CURRENCY_SYMBOL = {code: sym for code, sym in CURRENCIES}
-DEFAULT_CURRENCY = "USD"
 
-# Daily DB backups
 BACKUP_DIR = "backups"
 BACKUP_RETENTION_DAYS = 30
 
-APP_VERSION = "v4.3.0"
+APP_VERSION = "v4.4.0"
 
 # ============================================================
 # I18N
@@ -91,9 +87,6 @@ TEXT = {
         "tariff": "Tariff",
         "tax": "Tax",
         "total": "Total",
-        "currency": "Currency",
-        "dollars": "Dollars ($)",
-        "colones": "Colones (₡)",
         "observations": "Observations",
         "status": "Status",
         "available": "Available",
@@ -155,8 +148,6 @@ TEXT = {
         "no_backups": "No backups found yet.",
         "last_backup": "Last backup",
         "latest_backup": "Latest backup",
-        "stays": "Total Stays",
-        "nights": "Nights",
         "confirm_action": "Confirm action",
         "unexpected_error": "Unexpected error",
         "audit_log": "Audit Log",
@@ -165,18 +156,19 @@ TEXT = {
         "audit_download": "Download audit CSV",
         "enter_username": "Enter username",
         "room_history_hint": "Pick a room number to see its reservation history (latest first).",
-        "prices_admin_only": "Only admins can change room prices.",
-        "auto_filled": "Auto-filled from room defaults.",
-        "crc_calc_title": "Calculate room price in colones (CRC)",
-        "crc_calc_hint": "Enter today's exchange rate once. It is saved for today and will reset tomorrow.",
+        "prices_admin_only": "Only admins can view/change room prices.",
+        "auto_filled": "Auto-filled from room default prices.",
+        "save_room_prices": "Save room default prices",
+        "room_prices_title": "Room Default Prices (Admin) — stored in USD",
+        "crc_calc_hint": "Enter today's exchange rate once. It saves for today and will be empty again tomorrow.",
         "fx_today": "Today's exchange rate (₡ per $1)",
         "fx_example": "Example: if $1 = ₡520, enter 520",
         "fx_save": "Save today's rate",
         "fx_saved": "Saved for today.",
         "fx_missing": "No exchange rate saved for today yet.",
         "fx_last_saved": "Saved today by",
-        "per_night": "Per night",
-        "total_stay": "Total stay",
+        "total_crc_title": "Total in colones (CRC)",
+        "details": "Details",
     },
     "es": {
         "app_title": "Administrador del Hotel Isla Verde",
@@ -205,9 +197,6 @@ TEXT = {
         "tariff": "Tarifa",
         "tax": "Impuesto",
         "total": "Total",
-        "currency": "Moneda",
-        "dollars": "Dólares ($)",
-        "colones": "Colones (₡)",
         "observations": "Observaciones",
         "status": "Estado",
         "available": "Disponible",
@@ -269,8 +258,6 @@ TEXT = {
         "no_backups": "Aún no hay backups.",
         "last_backup": "Último backup",
         "latest_backup": "Último backup",
-        "stays": "Estancias Totales",
-        "nights": "Noches",
         "confirm_action": "Confirmar acción",
         "unexpected_error": "Error inesperado",
         "audit_log": "Registro de Auditoría",
@@ -279,18 +266,19 @@ TEXT = {
         "audit_download": "Descargar auditoría CSV",
         "enter_username": "Ingrese usuario",
         "room_history_hint": "Elige una habitación para ver su historial (lo más reciente primero).",
-        "prices_admin_only": "Solo admins pueden cambiar precios.",
+        "prices_admin_only": "Solo admins pueden ver/cambiar precios.",
         "auto_filled": "Autollenado desde precios por defecto.",
-        "crc_calc_title": "Calcular precio en colones (CRC)",
-        "crc_calc_hint": "Ingresa el tipo de cambio una vez. Se guarda solo para hoy y se reinicia mañana.",
+        "save_room_prices": "Guardar precios por defecto",
+        "room_prices_title": "Precios por defecto (Admin) — en USD",
+        "crc_calc_hint": "Ingresa el tipo de cambio una vez. Se guarda solo para hoy y mañana estará vacío.",
         "fx_today": "Tipo de cambio de hoy (₡ por $1)",
         "fx_example": "Ejemplo: si $1 = ₡520, escribe 520",
         "fx_save": "Guardar tipo de cambio de hoy",
         "fx_saved": "Guardado para hoy.",
         "fx_missing": "Aún no hay tipo de cambio guardado para hoy.",
         "fx_last_saved": "Guardado hoy por",
-        "per_night": "Por noche",
-        "total_stay": "Total estancia",
+        "total_crc_title": "Total en colones (CRC)",
+        "details": "Detalles",
     },
 }
 
@@ -354,11 +342,6 @@ def current_role() -> str:
 
 def is_admin() -> bool:
     return st.session_state.get("role") == "admin"
-
-
-def _normalize_currency(currency: str) -> str:
-    c = (currency or DEFAULT_CURRENCY).upper()
-    return c if c in CURRENCY_SYMBOL else DEFAULT_CURRENCY
 
 
 def status_display(db_status: str) -> str:
@@ -426,21 +409,21 @@ def ensure_column(conn: sqlite3.Connection, table: str, col_def_sql: str, col_na
 
 def init_db():
     with db() as conn:
-        # Rooms include default pricing (USD)
+        # rooms include default pricing (USD)
         conn.execute(
-            f"""
+            """
             CREATE TABLE IF NOT EXISTS rooms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 number TEXT NOT NULL UNIQUE,
-                default_tariff REAL DEFAULT 0,   -- USD
-                default_tax REAL DEFAULT 0       -- USD
+                default_tariff REAL DEFAULT 0,
+                default_tax REAL DEFAULT 0
             );
             """
         )
 
-        # Reservations store USD amounts always (tariff/tax)
+        # reservations store USD tariff & tax
         conn.execute(
-            f"""
+            """
             CREATE TABLE IF NOT EXISTS reservations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id INTEGER NOT NULL,
@@ -450,8 +433,8 @@ def init_db():
                 check_out TEXT NOT NULL,
                 notes TEXT DEFAULT "",
                 num_guests INTEGER DEFAULT 1,
-                tariff REAL DEFAULT 0, -- USD
-                tax REAL DEFAULT 0,    -- USD
+                tariff REAL DEFAULT 0,
+                tax REAL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
@@ -483,12 +466,12 @@ def init_db():
             """
         )
 
-        # NEW: daily exchange rate table (saves only for that day)
+        # daily exchange rate table
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS fx_daily (
-                day TEXT PRIMARY KEY,          -- YYYY-MM-DD
-                fx_usd_crc REAL NOT NULL,      -- ₡ per $1
+                day TEXT PRIMARY KEY,
+                fx_usd_crc REAL NOT NULL,
                 ts TEXT NOT NULL,
                 user TEXT NOT NULL,
                 role TEXT NOT NULL
@@ -496,11 +479,11 @@ def init_db():
             """
         )
 
-        # migrations for older DBs
-        ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
-        ensure_column(conn, "reservations", "tax REAL DEFAULT 0", "tax")
+        # migrations for old DBs
         ensure_column(conn, "rooms", "default_tariff REAL DEFAULT 0", "default_tariff")
         ensure_column(conn, "rooms", "default_tax REAL DEFAULT 0", "default_tax")
+        ensure_column(conn, "reservations", "tariff REAL DEFAULT 0", "tariff")
+        ensure_column(conn, "reservations", "tax REAL DEFAULT 0", "tax")
 
 
 def get_setting(key: str, default: str) -> str:
@@ -551,7 +534,7 @@ def log_audit(action: str, entity: str, entity_id: Optional[int] = None, details
 
 
 # ============================================================
-# DAILY FX (saved per day; "resets" automatically tomorrow)
+# DAILY FX (saved per day; tomorrow is empty again)
 # ============================================================
 def get_fx_for_day(day: date) -> Optional[sqlite3.Row]:
     with db() as conn:
@@ -1138,91 +1121,92 @@ show_register_popup_if_needed()
 # VIEWS
 # ============================================================
 try:
+    # ========================================================
+    # CRC CALCULATOR (SIMPLIFIED)
+    # ========================================================
     if view_key == "crc_calculator":
         st.subheader(t("crc_calculator"))
-        st.markdown(f"### 💱 {t('crc_calc_title')}")
         st.caption(t("crc_calc_hint"))
 
-        today_row = get_fx_for_day(date.today())
-        fx_today = get_today_fx_value()
+        today = date.today()
+        today_row = get_fx_for_day(today)
+        saved_fx = get_today_fx_value()
 
+        # 1) Simple rate box
         with st.container(border=True):
-            a, b = st.columns([2, 1])
-            with a:
+            left, right = st.columns([2, 1])
+
+            with left:
                 fx_input = st.number_input(
                     t("fx_today"),
                     min_value=0.0,
-                    value=float(fx_today),
+                    value=float(saved_fx),
                     step=1.0,
                     format="%.2f",
                     help=t("fx_example"),
                 )
-                st.caption(t("fx_example"))
                 if st.button("💾 " + t("fx_save"), type="primary"):
-                    save_today_fx(float(fx_input))
-                    st.success(t("fx_saved"))
-                    st.rerun()
-            with b:
+                    if fx_input <= 0:
+                        st.warning(t("fx_missing"))
+                    else:
+                        save_today_fx(float(fx_input))
+                        st.success(t("fx_saved"))
+                        st.rerun()
+
+            with right:
                 if today_row:
                     st.markdown(
                         f"**{t('fx_today')}:** {float(today_row['fx_usd_crc']):,.2f}\n\n"
-                        f"**{t('fx_last_saved')}:** {today_row['user']}\n\n"
-                        f"**TS:** {today_row['ts']}"
+                        f"**{t('fx_last_saved')}:** {today_row['user']}"
                     )
                 else:
                     st.info(t("fx_missing"))
 
+        fx = get_today_fx_value()
+        if fx <= 0:
+            st.warning(t("fx_missing"))
+            st.stop()
+
         st.divider()
 
+        # 2) Simple total CRC result
         rooms = get_rooms()
         room_numbers = [str(r["number"]) for r in rooms]
-        c1, c2, c3 = st.columns([1, 1, 1])
 
+        c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             room_sel = st.selectbox(t("room"), room_numbers, index=0)
         with c2:
-            ci = st.date_input(t("checkin_date"), value=date.today())
+            ci = st.date_input(t("checkin_date"), value=today)
         with c3:
-            co = st.date_input(t("checkout_date"), value=date.today() + timedelta(days=1))
+            co = st.date_input(t("checkout_date"), value=today + timedelta(days=1))
 
         nn = nights(ci, co)
+        if nn <= 0:
+            st.error(t("date_range_error"))
+            st.stop()
+
         room_row = get_room_by_number(room_sel)
         tariff_usd = float(room_row["default_tariff"] or 0.0) if room_row else 0.0
         tax_usd = float(room_row["default_tax"] or 0.0) if room_row else 0.0
-        per_night_usd = max(0.0, tariff_usd + tax_usd)
+
         total_usd = calc_total_usd(tariff_usd, tax_usd, nn)
+        total_crc = usd_to_crc(total_usd, fx) or 0.0
 
-        fx = get_today_fx_value()
-        per_night_crc = usd_to_crc(per_night_usd, fx)
-        total_crc = usd_to_crc(total_usd, fx)
+        st.markdown(f"### 💰 {t('total_crc_title')}")
+        st.metric("CRC", fmt_money(total_crc, "CRC"))
 
-        st.caption(f"{t('num_nights')}: {nn}")
+        with st.expander(f"{t('details')} (USD)", expanded=False):
+            st.write(f"**{t('room')}:** {room_sel}")
+            st.write(f"**{t('num_nights')}:** {nn}")
+            st.write(f"**{t('tariff')} (USD):** {fmt_money(tariff_usd, 'USD')}")
+            st.write(f"**{t('tax')} (USD):** {fmt_money(tax_usd, 'USD')}")
+            st.write(f"**{t('total')} (USD):** {fmt_money(total_usd, 'USD')}")
+            st.write(f"**{t('fx_today')}:** {fx:,.2f}")
 
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric(f"{t('tariff')} (USD)", fmt_money(tariff_usd, "USD"))
-        with m2:
-            st.metric(f"{t('tax')} (USD)", fmt_money(tax_usd, "USD"))
-        with m3:
-            st.metric(f"{t('per_night')} (USD)", fmt_money(per_night_usd, "USD"))
-        with m4:
-            st.metric(f"{t('total_stay')} (USD)", fmt_money(total_usd, "USD"))
-
-        st.divider()
-
-        n1, n2, n3, n4 = st.columns(4)
-        with n1:
-            st.metric(f"{t('tariff')} (CRC)", fmt_money(usd_to_crc(tariff_usd, fx), "CRC") if fx > 0 else "—")
-        with n2:
-            st.metric(f"{t('tax')} (CRC)", fmt_money(usd_to_crc(tax_usd, fx), "CRC") if fx > 0 else "—")
-        with n3:
-            st.metric(f"{t('per_night')} (CRC)", fmt_money(per_night_crc, "CRC") if per_night_crc is not None else "—")
-        with n4:
-            st.metric(f"{t('total_stay')} (CRC)", fmt_money(total_crc, "CRC") if total_crc is not None else "—")
-
-        if fx <= 0:
-            st.warning(t("fx_missing"))
-
+    # ========================================================
+    # EL ROLL
+    # ========================================================
     elif view_key == "el_roll":
         col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
         with col1:
@@ -1379,8 +1363,6 @@ try:
                     check_out_s = reservation_data["check_out"]
                     notes = reservation_data["notes"] or ""
                     num_guests = int(reservation_data["num_guests"] or 1)
-                    tariff_usd = float(reservation_data["tariff"] or 0.0)
-                    tax_usd = float(reservation_data["tax"] or 0.0)
 
                     st.divider()
                     st.subheader(t("edit_from_elroll"))
@@ -1402,6 +1384,7 @@ try:
                         nn = nights(check_in_new, check_out_new)
                         st.caption(f"{t('num_nights')}: {nn}")
 
+                        # Prices always come from room defaults unless admin overrides
                         room_row = get_room_by_number(room_number_new)
                         room_default_tariff = float(room_row["default_tariff"] or 0.0) if room_row else 0.0
                         room_default_tax = float(room_row["default_tax"] or 0.0) if room_row else 0.0
@@ -1415,7 +1398,7 @@ try:
                                 tariff_new_usd = st.number_input(
                                     f"{t('tariff')} (USD)",
                                     min_value=0.0,
-                                    value=float(tariff_usd),
+                                    value=float(reservation_data["tariff"] or room_default_tariff),
                                     step=10.0,
                                     format="%.2f",
                                 )
@@ -1436,7 +1419,7 @@ try:
                                 tax_new_usd = st.number_input(
                                     f"{t('tax')} (USD)",
                                     min_value=0.0,
-                                    value=float(tax_usd),
+                                    value=float(reservation_data["tax"] or room_default_tax),
                                     step=1.0,
                                     format="%.2f",
                                 )
@@ -1485,6 +1468,7 @@ try:
                             elif check_out_new <= check_in_new:
                                 st.error(t("date_range_error"))
                             else:
+                                # force non-admin prices from defaults
                                 if not is_admin():
                                     tariff_new_usd = float(room_default_tariff)
                                     tax_new_usd = float(room_default_tax)
@@ -1529,6 +1513,9 @@ try:
                                 st.session_state.delete_candidate = None
                                 st.rerun()
 
+    # ========================================================
+    # REGISTER GUESTS
+    # ========================================================
     elif view_key == "register_guests":
         st.subheader(t("register_guests"))
 
@@ -1613,6 +1600,7 @@ try:
                 elif check_out <= check_in:
                     st.error(t("date_range_error"))
                 else:
+                    # force non-admin prices from defaults
                     if not is_admin():
                         tariff_usd = float(room_default_tariff)
                         tax_usd = float(room_default_tax)
@@ -1634,6 +1622,7 @@ try:
                     else:
                         st.error(t("room_occupied"))
 
+        # Admin-only room management & pricing
         if is_admin():
             st.divider()
             st.subheader(t("room_management"))
@@ -1655,7 +1644,7 @@ try:
 
             rooms = get_rooms()
             if rooms:
-                st.markdown("#### Room Default Prices (Admin) — stored in USD")
+                st.markdown(f"#### {t('room_prices_title')}")
                 room_rows = []
                 for r in rooms:
                     room_rows.append(
@@ -1682,7 +1671,7 @@ try:
                     key="room_defaults_editor",
                 )
 
-                if st.button("💾 Save room default prices", type="primary"):
+                if st.button("💾 " + t("save_room_prices"), type="primary"):
                     for _, row in edited.iterrows():
                         update_room_defaults(
                             room_id=int(row["id"]),
@@ -1708,6 +1697,9 @@ try:
         else:
             st.info(t("prices_admin_only"))
 
+    # ========================================================
+    # SEARCH GUESTS
+    # ========================================================
     elif view_key == "search_guests":
         st.subheader(t("search_guests"))
 
@@ -1783,6 +1775,9 @@ try:
             else:
                 st.info(t("no_res_for_name"))
 
+    # ========================================================
+    # ROOM HISTORY (SIMPLE)
+    # ========================================================
     elif view_key == "room_history":
         st.subheader(t("room_history"))
         st.caption(t("room_history_hint"))
@@ -1839,6 +1834,9 @@ try:
                         mime="text/csv",
                     )
 
+    # ========================================================
+    # SETTINGS
+    # ========================================================
     elif view_key == "settings":
         st.subheader(t("settings"))
 
